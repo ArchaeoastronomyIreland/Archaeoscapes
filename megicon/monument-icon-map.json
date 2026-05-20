@@ -1,0 +1,32 @@
+{
+  "Megalithic tomb - passage tomb": { "shape": "circle", "fill": "solid", "a": "#ef4444", "overlay": "none" },
+  "Megalithic tomb - wedge tomb": { "shape": "circle", "fill": "solid", "a": "#ec4899", "overlay": "none" },
+  "Megalithic tomb - court tomb": { "shape": "circle", "fill": "solid", "a": "#eab308", "overlay": "none" },
+  "Megalithic tomb - portal tomb": { "shape": "circle", "fill": "solid", "a": "#a855f7", "overlay": "none" },
+  "Megalithic tomb - unclassified": { "shape": "circle", "fill": "split-lr", "a": "#84cc16", "b": "#22c55e", "overlay": "none" },
+
+  "Barrow - mound barrow": { "shape": "triangle", "fill": "solid", "a": "#60a5fa", "overlay": "none" },
+  "Barrow - bowl-barrow": { "shape": "triangle", "fill": "split-lr", "a": "#fb7185", "b": "#f97316", "overlay": "none" },
+  "Barrow - ring-barrow": { "shape": "triangle", "fill": "split-tb", "a": "#34d399", "b": "#22c55e", "overlay": "none" },
+  "Barrow - unclassified": { "shape": "triangle", "fill": "solid", "a": "#a78bfa", "overlay": "none" },
+
+  "Cairn - unclassified": { "shape": "square", "fill": "solid", "a": "#22c55e", "overlay": "none" },
+  "Cursus": { "shape": "square", "fill": "split-lr", "a": "#94a3b8", "b": "#64748b", "overlay": "none" },
+  "Henge": { "shape": "square", "fill": "solid", "a": "#f97316", "overlay": "none" },
+  "Rock art": { "shape": "square", "fill": "solid", "a": "#8b5cf6", "overlay": "none" },
+
+  "Stone circle": { "shape": "square", "fill": "solid", "a": "#3b82f6", "overlay": "none" },
+  "Stone circle - five-stone": { "shape": "square", "fill": "split-lr", "a": "#3b82f6", "b": "#a855f7", "overlay": "none" },
+  "Stone circle - embanked": { "shape": "square", "fill": "split-tb", "a": "#3b82f6", "b": "#22c55e", "overlay": "none" },
+  "Embanked enclosure": { "shape": "square", "fill": "split-lr", "a": "#22c55e", "b": "#84cc16", "overlay": "none" },
+  "Ceremonial enclosure": { "shape": "square", "fill": "split-tb", "a": "#fde047", "b": "#f59e0b", "overlay": "none" },
+
+  "Standing stone": { "shape": "triangle", "fill": "solid", "a": "#38bdf8", "overlay": "none" },
+  "Standing stone - pair": { "shape": "triangle", "fill": "split-lr", "a": "#38bdf8", "b": "#f472b6", "overlay": "none" },
+  "Stone row": { "shape": "triangle", "fill": "split-tb", "a": "#ef4444", "b": "#f97316", "overlay": "none" },
+
+  "Church": { "shape": "circle", "fill": "solid", "a": "#0f172a", "overlay": "none" },
+  "Cross": { "shape": "diamond", "fill": "split-lr", "a": "#7c3aed", "b": "#3b82f6", "overlay": "none" },
+  "Religious house": { "shape": "circle", "fill": "quad", "a": "#0f172a", "b": "#334155", "c": "#0ea5e9", "d": "#38bdf8", "overlay": "none" }
+}
+

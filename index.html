@@ -1,0 +1,724 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Terrarium Site Tour</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Montserrat:wght@300;400;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+  <!-- Phosphor Icons (match Skyscraper) -->
+  <script src="https://unpkg.com/@phosphor-icons/web"></script>
+
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/esri-leaflet@2.5.0/dist/esri-leaflet.js"></script>
+  <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+
+  <link rel="stylesheet" href="./megicon/megicon.css" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="sidebar-header" aria-hidden="true">
+        <div class="brand">
+          <div class="brand-logo" aria-label="Archaeoscapes">
+            <i class="fa-solid fa-landmark"></i>
+            <span>Archaeoscapes</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="sidebar-scroll" aria-label="Sidebar content">
+        <!-- Megalithic type selection (expanded by default) -->
+        <section class="panel panel-collapsible" data-panel="types">
+        <div class="panel-head">
+          <div class="panel-title" style="margin:0; display:flex; align-items:center; gap:8px;">
+            <span id="types-type-dot" class="type-dot" style="display:none;"></span>
+            <span id="types-panel-title">Monument Types</span>
+          </div>
+          <button type="button" class="panel-toggle" data-panel-action="types-toggle" aria-label="Toggle types panel" title="Minimise/Maximise">
+            <i class="ph-bold ph-minus"></i>
+          </button>
+        </div>
+        <div class="panel-body" data-panel-body="types">
+          <div id="type-list" class="type-list"></div>
+        </div>
+        </section>
+
+        <!-- Sites for selected type (collapsed until a type is selected) -->
+        <section class="panel panel-collapsible" data-panel="sites">
+        <div class="panel-head">
+          <div class="panel-title" style="margin:0; display:flex; align-items:center; gap:8px;">
+            <span id="sites-type-dot" class="type-dot" style="display:none;"></span>
+            <span id="sites-panel-title">Sites</span>
+          </div>
+          <button type="button" class="panel-toggle" data-panel-action="sites-toggle" aria-label="Toggle sites panel" title="Minimise/Maximise">
+            <i class="ph-bold ph-plus"></i>
+          </button>
+        </div>
+        <div class="panel-body hidden" data-panel-body="sites">
+          <div id="site-list" class="site-list"></div>
+        </div>
+        </section>
+
+        <!-- Saved Views -->
+        <section class="panel panel-collapsible panel-saved-views" data-panel="saved-views">
+        <div class="panel-head">
+          <div class="panel-title" style="margin:0; display:flex; align-items:center; gap:8px;">
+            <i class="ph-bold ph-bookmark-simple"></i>
+            <span>Saved Views</span>
+          </div>
+          <button type="button" class="panel-toggle" data-panel-action="saved-views-toggle" aria-label="Toggle saved views panel" title="Minimise/Maximise">
+            <i class="ph-bold ph-caret-down"></i>
+          </button>
+        </div>
+        <div class="panel-body hidden" data-panel-body="saved-views">
+          <div id="saved-views-list" class="saved-views-list"></div>
+        </div>
+        </section>
+
+        <!-- Configuration (collapsed by default) -->
+        <section class="panel panel-collapsible panel-config" data-panel="config">
+        <div class="panel-head">
+          <div class="panel-title" style="margin:0; display:flex; align-items:center; gap:8px;">
+            <i class="ph-bold ph-gear-six"></i>
+            <span>Configuration</span>
+          </div>
+          <button type="button" class="panel-toggle" data-panel-action="config-toggle" aria-label="Toggle configuration panel" title="Minimise/Maximise">
+            <i class="ph-bold ph-caret-down"></i>
+          </button>
+        </div>
+        <div class="panel-body hidden" data-panel-body="config">
+          <!-- Presets (collapsed by default) -->
+          <section class="panel panel-collapsible panel-presets" data-panel="presets">
+            <div class="panel-head">
+              <div class="panel-title" style="margin:0; display:flex; align-items:center; gap:8px;">
+                <i class="ph-bold ph-list-checks"></i>
+                <span>Presets</span>
+              </div>
+              <button type="button" class="panel-toggle" data-panel-action="presets-toggle" aria-label="Toggle presets panel" title="Minimise/Maximise">
+                <i class="ph-bold ph-caret-down"></i>
+              </button>
+            </div>
+            <div class="panel-body hidden" data-panel-body="presets">
+              <div class="preset-hint">Select which monument classes appear in the Monument Types list.</div>
+              <div id="preset-status" class="status">Loading monument type list…</div>
+              <div id="preset-list" class="preset-list"></div>
+            </div>
+          </section>
+
+          <div class="panel config-inner saved-config">
+            <div class="panel-title"><i class="ph-bold ph-bookmark-simple"></i> Saved Views</div>
+            <label class="layer-option" style="display:flex; align-items:flex-start; gap:10px;">
+              <input id="saved-views-enabled" type="checkbox" checked />
+              <span>
+                <strong>Enable Stored Views</strong>
+                <small>Store named view snapshots in this browser using IndexedDB.</small>
+              </span>
+            </label>
+            <button id="saved-view-purge" class="saved-action-btn danger" type="button">
+              <i class="ph-bold ph-trash"></i>
+              <span>Purge Saved View Data</span>
+            </button>
+          </div>
+
+          <div class="panel config-inner monument-selection-config">
+            <div class="panel-title"><i class="ph-bold ph-floppy-disk"></i> Save Monument Selection</div>
+            <label class="layer-option" style="display:flex; align-items:flex-start; gap:10px;">
+              <input id="save-monument-selection-enabled" type="checkbox" checked />
+              <span>
+                <strong>Enable Monument Selection Storage</strong>
+                <small>Persist the currently selected Monument Types in this browser using IndexedDB.</small>
+              </span>
+            </label>
+            <button id="reset-monument-selection" class="monument-selection-reset" type="button">
+              <i class="ph-bold ph-arrow-counter-clockwise"></i>
+              <span>Reset Defaults</span>
+            </button>
+          </div>
+
+          <div class="panel config-inner">
+            <div class="panel-title"><i class="ph-bold ph-image"></i> Aerial Imagery</div>
+            <div class="layer-options" id="imagery-options">
+              <label class="layer-option">
+                <input type="radio" name="imagery-base" value="google">
+                <span>
+                  <strong>Google Aerial</strong>
+                  <small>Satellite base</small>
+                </span>
+              </label>
+              <label class="layer-option">
+                <input type="radio" name="imagery-base" value="esri-clarity" checked>
+                <span>
+                  <strong>Esri Aerial Clarity</strong>
+                  <small>Default World Imagery Clarity tiles</small>
+                </span>
+              </label>
+              <label class="layer-option">
+                <input type="radio" name="imagery-base" value="terrain">
+                <span>
+                  <strong>Terrain (Relief)</strong>
+                  <small>Painted hillshade + elevation tint (from DEM)</small>
+                </span>
+              </label>
+            </div>
+          </div>
+
+          <div class="panel config-inner">
+            <div class="panel-title"><i class="ph-bold ph-sliders-horizontal"></i> Display Options</div>
+            <div class="layer-option" style="display:flex; align-items:flex-start; gap:10px;">
+              <i class="ph-bold ph-transparency" style="margin-top:2px;"></i>
+              <span>
+                <strong>Display Visibility</strong>
+                <small>Adjust the background transparency for Notes and Legend overlays.</small>
+              </span>
+            </div>
+            <div class="range-row" style="margin-top: 8px;">
+              <span>Overlay background</span>
+              <strong id="overlay-opacity-value">40%</strong>
+            </div>
+            <input id="overlay-opacity" class="range-input" type="range" min="0" max="1" step="0.1" value="0.4">
+
+            <label class="layer-option" style="display:flex; align-items:flex-start; gap:10px;">
+              <input id="show-related-monuments" type="checkbox" />
+              <span>
+                <strong>Show Relational Monuments of Type</strong>
+                <small>Show other monuments of the selected type in the current view</small>
+              </span>
+            </label>
+            <div class="range-row" style="margin-top: 8px;">
+              <span>Type range</span>
+              <strong id="related-range-value">0 km</strong>
+            </div>
+            <input id="related-range" class="range-input" type="range" min="0" max="20000" step="5000" value="0">
+            <label class="layer-option" style="display:flex; align-items:flex-start; gap:10px; margin-top: 10px;">
+              <input id="show-all-relational" type="checkbox" />
+              <span>
+                <strong>Show All Relational Monuments</strong>
+                <small>Show all relational monument types in the current view as markers (click marker to show label)</small>
+              </span>
+            </label>
+            <div class="range-row" style="margin-top: 8px;">
+              <span>Relational Types Range</span>
+              <strong id="all-relational-range-value">0 km</strong>
+            </div>
+            <input id="all-relational-range" class="range-input" type="range" min="0" max="20000" step="5000" value="0">
+            <label class="layer-option" style="display:flex; align-items:flex-start; gap:10px; margin-top: 10px;">
+              <input id="show-all-monuments" type="checkbox" />
+              <span>
+                <strong>Show All Monuments</strong>
+                <small>Show all monument types in the current view as markers (click marker to show label)</small>
+              </span>
+            </label>
+            <label class="layer-option" style="display:flex; align-items:flex-start; gap:10px; margin-top: 10px;">
+              <input id="show-notes" type="checkbox" checked />
+              <span>
+                <strong>Show Notes</strong>
+                <small>Show Web Notes for the selected monument</small>
+              </span>
+            </label>
+            <label class="layer-option" style="display:flex; align-items:flex-start; gap:10px; margin-top: 10px;">
+              <input id="show-legend" type="checkbox" checked />
+              <span>
+                <strong>Show Legend</strong>
+                <small>Show monument types currently shown in the view</small>
+              </span>
+            </label>
+            <label class="layer-option" style="display:flex; align-items:flex-start; gap:10px; margin-top: 10px;">
+              <input id="show-all-labels" type="checkbox" />
+              <span>
+                <strong>Show All Labels</strong>
+                <small>Show labels for the currently shown relational markers</small>
+              </span>
+            </label>
+          </div>
+
+          <div class="panel config-inner">
+            <div class="panel-title"><i class="ph-bold ph-mountains"></i> Terrain Controls</div>
+            <label class="range-row" for="height-exaggeration">
+              <span>Vertical exaggeration</span>
+              <strong id="height-exaggeration-value">1.0x</strong>
+            </label>
+            <input id="height-exaggeration" class="range-input" type="range" min="0" max="4" step="0.1" value="1">
+            <p class="hint small">0x uses the aerial image as a flat surface. Increase to raise terrain relief from the DEM.</p>
+            <div class="layer-options compact" id="dem-area-options">
+              <label class="layer-option">
+                <input type="radio" name="dem-area" value="standard" checked>
+                <span>
+                  <strong>Standard DEM Area</strong>
+                  <small>Current high-resolution terrain footprint</small>
+                </span>
+              </label>
+              <label class="layer-option">
+                <input type="radio" name="dem-area" value="double">
+                <span>
+                  <strong>Double DEM Area</strong>
+                  <small>Wider high-resolution DEM and aerial footprint</small>
+                </span>
+              </label>
+            </div>
+          </div>
+        </div>
+        </section>
+
+        <!-- About -->
+        <section class="panel panel-collapsible panel-about" data-panel="about">
+        <div class="panel-head">
+          <div class="panel-title" style="margin:0; display:flex; align-items:center; gap:8px;">
+            <i class="ph-bold ph-info"></i>
+            <span>About</span>
+          </div>
+          <button type="button" class="panel-toggle" data-panel-action="about-toggle" aria-label="Toggle about panel" title="Minimise/Maximise">
+            <i class="ph-bold ph-caret-down"></i>
+          </button>
+        </div>
+        <div class="panel-body hidden" data-panel-body="about">
+          <div class="about-inner">
+            <div class="brand-logo about-archaeoscapes" aria-label="Archaeoscapes">
+              <i class="fa-solid fa-landmark"></i>
+              <span>Archaeoscapes</span>
+            </div>
+            <div class="about-developed">developed by</div>
+            <div class="about-name">Brian Doyle</div>
+            <div class="about-year">2026</div>
+
+            <div class="about-copy">
+              <p><strong>Licence.</strong> The code is issued using Creative Commons — Attribution 4.0 International — CC BY 4.0.</p>
+              <p><strong>Disclaimer.</strong> This application and its outputs are provided for research, educational, and exploratory use only. Data, terrain, imagery, derived views, positional information, classifications, and interpretive material may contain errors or omissions and should not be treated as legal, planning, conservation, excavation, navigation, or safety advice. Users should verify all information against the relevant official sources before relying on it.</p>
+              <p><strong>Attributions.</strong></p>
+              <ul>
+                <li>Elevation data: Terrarium-format public elevation tiles from AWS Open Data / Mapzen-derived terrain tiles.</li>
+                <li>Imagery: Esri World Imagery / Esri World Imagery Clarity.</li>
+                <li>Imagery: Google satellite tile service where selected by the user.</li>
+                <li>Monument data, Ireland: National Monuments Service Sites and Monuments Record Open Data.</li>
+                <li>Monument data, Northern Ireland: Historic Environment Division / Department for Communities HED and NISMR public datasets.</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+        </section>
+
+        <div class="panel">
+          <div class="panel-title">Status</div>
+          <p class="hint">Live NMS SMR features are pulled on demand for the selected type.</p>
+          <div id="nms-status" class="status">Loading NMS layer...</div>
+        </div>
+      </div>
+
+    </aside>
+
+    <main class="tour-stage">
+      <div id="stage-loading" class="stage-loading" aria-live="polite" aria-busy="true">
+        <button id="loading-help-view" class="loading-help-btn" type="button" aria-label="Help" title="Help">
+          <i class="ph-bold ph-question"></i>
+        </button>
+        <div class="stage-loading-logo" aria-hidden="true">
+          <i class="fa-solid fa-landmark"></i>
+          <span>Archaeoscapes</span>
+        </div>
+        <div class="stage-loading-card">
+          <div id="stage-loading-text" class="stage-loading-text">Select a site from the sidebar…</div>
+          <div id="stage-loading-progress" class="stage-loading-progress" role="progressbar" aria-label="Loading progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" data-mode="determinate">
+            <div id="stage-loading-progress-fill" class="stage-loading-progress-fill"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="topbar">
+        <div id="hud-left" class="hud-left" aria-hidden="true"></div>
+        <div id="stage-toolbar-left" class="display-toolbar stage-toolbar-left" aria-label="Stage toolbar">
+          <button id="toggle-sidebar" class="display-btn" type="button" data-tip="Show/Hide sidebar" aria-label="Show/Hide sidebar" aria-pressed="true">
+            <i class="ph-bold ph-sidebar-simple"></i>
+          </button>
+          <button id="hide-controls" class="display-btn" type="button" data-tip="Hide Controls" aria-label="Hide Controls" aria-pressed="false">
+            <i class="ph-bold ph-square"></i>
+          </button>
+          <button id="save-view" class="display-btn" type="button" data-tip="Save View" aria-label="Save View">
+            <i class="ph-bold ph-floppy-disk"></i>
+          </button>
+          <button id="copy-view" class="display-btn" type="button" data-tip="Copy View URL" aria-label="Copy View URL">
+            <i class="ph-bold ph-link-simple"></i>
+          </button>
+          <button id="capture-view" class="display-btn" type="button" data-tip="Capture Image" aria-label="Capture Image">
+            <i class="ph-bold ph-camera"></i>
+          </button>
+          <button id="help-view" class="display-btn" type="button" data-tip="Help" aria-label="Help">
+            <i class="ph-bold ph-question"></i>
+          </button>
+          <button id="orbit-site" class="display-btn" type="button" data-tip="Orbit selected site" aria-label="Orbit selected site">
+            <i class="ph-bold ph-arrow-clockwise"></i>
+          </button>
+        </div>
+        <div class="topbar-right">
+          <div id="display-toolbar-hint" class="display-toolbar-hint" aria-live="polite"></div>
+          <div id="display-toolbar" class="display-toolbar" aria-label="Display options toolbar">
+            <button id="reset-view" class="display-btn" type="button" data-tip="Reset view" aria-label="Reset view">
+              <i class="ph-bold ph-arrow-counter-clockwise"></i>
+            </button>
+            <button class="display-btn" type="button" data-toggle="show-notes" data-tip="Show Notes" aria-label="Show Notes" aria-pressed="false">
+              <i class="ph-bold ph-note"></i>
+            </button>
+            <button class="display-btn" type="button" data-toggle="show-legend" data-tip="Show Legend" aria-label="Show Legend" aria-pressed="false">
+              <i class="ph-bold ph-list-bullets"></i>
+            </button>
+            <button class="display-btn" type="button" data-toggle="show-related-monuments" data-tip="Show Relational Monuments of Type" aria-label="Show Relational Monuments of Type" aria-pressed="false">
+              <i class="ph-bold ph-share-network"></i>
+            </button>
+            <button class="display-btn" type="button" data-toggle="show-all-relational" data-tip="Show All Relational Monuments" aria-label="Show All Relational Monuments" aria-pressed="false">
+              <i class="ph-bold ph-circles-three"></i>
+            </button>
+            <button class="display-btn" type="button" data-toggle="show-all-monuments" data-tip="Show All Monuments" aria-label="Show All Monuments" aria-pressed="false">
+              <i class="ph-bold ph-dots-nine"></i>
+            </button>
+            <button class="display-btn" type="button" data-toggle="show-all-labels" data-tip="Show All Labels" aria-label="Show All Labels" aria-pressed="false">
+              <i class="ph-bold ph-tag"></i>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <section id="help-overlay" class="help-overlay hidden" aria-label="Archaeoscapes help" aria-hidden="true">
+        <div class="help-watermark" aria-hidden="true">
+          <i class="fa-solid fa-landmark"></i>
+          <span>Archaeoscapes</span>
+        </div>
+        <button id="help-close" class="help-close" type="button" aria-label="Close Help">
+          <i class="ph-bold ph-x"></i>
+          <span>Close Help</span>
+        </button>
+        <div class="help-scroll">
+          <article class="help-card">
+            <header class="help-hero">
+              <div class="brand-logo help-logo" aria-label="Archaeoscapes">
+                <i class="fa-solid fa-landmark"></i>
+                <span>Archaeoscapes</span>
+              </div>
+              <h1>Application Help</h1>
+              <p>Archaeoscapes is a landscape viewer for exploring monuments in the physical terrain in which they sit throughout the island of Ireland.</p>
+              <p>The application is intended to help show selected and relational monument groups in context: for example by monument class, era, likely purpose, spatial association, or other categorised relationships.</p>
+            </header>
+
+            <section class="help-section">
+              <h2>Top-Left View Controls</h2>
+              <p>These controls manage the screen layout, saved views, help, and the selected-site orbit. They sit on the view itself so they remain available while working in the landscape.</p>
+              <div class="help-control-grid">
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-sidebar-simple"></i></span><strong>Show/Hide sidebar</strong><span>Expands or collapses the sidebar to give more room to the landscape.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-square"></i></span><strong>Hide Controls</strong><span>Reduces the interface for clean screen captures.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-floppy-disk"></i></span><strong>Save View</strong><span>Stores the current view, selected site, visible markers, labels, ranges, and UI state.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-link-simple"></i></span><strong>Copy View URL</strong><span>Copies a shareable link for the current view state.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-question"></i></span><strong>Help</strong><span>Opens this help page over the view area.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-arrow-clockwise"></i></span><strong>Orbit selected site</strong><span>Runs one smooth 360 degree orbit around the selected site.</span></div>
+              </div>
+            </section>
+
+            <section class="help-section">
+              <h2>Top-Right Display Options</h2>
+              <p>These buttons decide what is shown on top of the terrain. The marker modes are mutually exclusive: selecting one monument mode turns the others off so the view has one clear meaning.</p>
+              <div class="help-control-grid">
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-arrow-counter-clockwise"></i></span><strong>Reset view</strong><span>Returns the camera towards the selected site and default viewing angle.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-note"></i></span><strong>Show Notes</strong><span>Shows notes for the active label. <span class="help-orange">Click a label to make it active</span>; close notes or turn this off to hide the notes pane.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-list-bullets"></i></span><strong>Show Legend</strong><span>Shows the icon legend for the currently visible monument marker categories.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-share-network"></i></span><strong>Relational Monuments of Type</strong><span>Shows nearby monuments of the same selected type, within the configured Type range.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-circles-three"></i></span><strong>All Relational Monuments</strong><span>Shows nearby monuments from the enabled relational monument classes, within the configured All relational range.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-dots-nine"></i></span><strong>Show All Monuments</strong><span>Shows all monument markers available in the current query area. It shows markers first, not labels.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-tag"></i></span><strong>Show All Labels</strong><span>Adds labels only for markers that are already visible. If no marker mode is active, this turns off because there is nothing to label.</span></div>
+              </div>
+            </section>
+
+            <section class="help-section">
+              <h2>Notes, Links, and Details</h2>
+              <p>The Notes panel appears when Notes is enabled and a label is active. The first line identifies the active monument; the scroll area contains notes and optional detail fields.</p>
+              <div class="help-control-grid">
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-map-pin"></i></span><strong>Open in Google Maps</strong><span>Opens the active monument location in Google Maps using its latitude and longitude.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-browser"></i></span><strong>Open in National Monuments Viewer</strong><span>Opens the official source record where a valid ROI or NI public record link is available.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-eye"></i></span><strong>View</strong><span>Recentres the display on the monument represented by the active notes panel.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-dots-three-outline"></i></span><strong>Details</strong><span>Expands latitude, longitude, and the attribute table for the active monument.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-copy"></i></span><strong>Copy Lat/Lon</strong><span>Copies the displayed latitude or longitude from the Details area and confirms with the green Copied message.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-lightbulb"></i></span><strong>Notes background</strong><span>Toggles the translucent background behind notes for readability over bright imagery.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-x"></i></span><strong>Close notes</strong><span>Closes the notes panel without removing the marker or label.</span></div>
+              </div>
+            </section>
+
+            <section class="help-section">
+              <h2>Legend Controls</h2>
+              <p>The Legend explains the monument icons currently being used on the display. It updates as marker modes and monument classes change.</p>
+              <div class="help-control-grid">
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-lightbulb"></i></span><strong>Legend background</strong><span>Toggles the translucent legend background for readability.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-x"></i></span><strong>Close legend</strong><span>Closes the legend panel. Use Show Legend in the top-right toolbar to reopen it.</span></div>
+              </div>
+            </section>
+
+            <section class="help-section">
+              <h2>Movement Controls</h2>
+              <p>The bottom-right movement controls move the camera through the landscape. Use these after a site loads to inspect the monument from different heights and directions.</p>
+              <div class="help-control-grid">
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-plus"></i></span><strong>Zoom in</strong><span>Moves the camera closer to the terrain and selected focus area.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-minus"></i></span><strong>Zoom out</strong><span>Moves the camera further away to show more surrounding landscape.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-arrow-up"></i></span><strong>Move forward</strong><span>Moves the focus point forward in the current viewing direction.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-arrow-down"></i></span><strong>Move back</strong><span>Moves the focus point backwards from the current viewing direction.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-arrow-left"></i></span><strong>Move left</strong><span>Moves the focus point left across the terrain.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-arrow-right"></i></span><strong>Move right</strong><span>Moves the focus point right across the terrain.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-trend-down"></i></span><strong>Pitch down</strong><span>Lowers the viewing angle toward the ground.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-trend-up"></i></span><strong>Pitch up</strong><span>Raises the viewing angle for a broader horizon and skyline view.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-arrow-counter-clockwise"></i></span><strong>Rotate left</strong><span>Turns the camera bearing counter-clockwise around the focus area.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-arrow-clockwise"></i></span><strong>Rotate right</strong><span>Turns the camera bearing clockwise around the focus area.</span></div>
+              </div>
+            </section>
+
+            <section class="help-section">
+              <h2>Monument Icons, Markers, and Labels</h2>
+              <p>Monument classes use repeatable geometric icons. The same class uses the same icon in the Monument Types list, Sites context, map markers, and Legend.</p>
+              <div class="help-example-row">
+                <div class="help-monument-example">
+                  <span class="help-megicon-example" data-help-megicon="Megalithic tomb - passage tomb"></span>
+                  <div><strong>Megalithic tomb - passage tomb</strong><span>Example monument type icon</span></div>
+                </div>
+                <div class="help-monument-example">
+                  <span class="help-megicon-example" data-help-megicon="Megalithic tomb - wedge tomb"></span>
+                  <div><strong>Megalithic tomb - wedge tomb</strong><span>Example monument type icon</span></div>
+                </div>
+                <div class="help-monument-example">
+                  <span class="help-megicon-example" data-help-megicon="Barrow - bowl-barrow"></span>
+                  <div><strong>Barrow - bowl-barrow</strong><span>Example monument type icon</span></div>
+                </div>
+              </div>
+              <div class="help-guide-list">
+                <div class="help-guide-item">
+                  <span class="help-sidebar-icon"><i class="ph-bold ph-map-pin"></i></span>
+                  <div>
+                    <h3>Markers</h3>
+                    <p>Markers are the small monument icons placed over the landscape. <span class="help-orange">Click a marker once to show its label.</span> Click the same marker again to remove that label.</p>
+                  </div>
+                </div>
+                <div class="help-guide-item">
+                  <span class="help-sidebar-icon"><i class="ph-bold ph-tag"></i></span>
+                  <div>
+                    <h3>Labels</h3>
+                    <p>Labels identify the monument. <span class="help-orange">Click a label to make it active.</span> If Notes is enabled, the notes panel then shows the active monument’s information.</p>
+                  </div>
+                </div>
+                <div class="help-guide-item">
+                  <span class="help-sidebar-icon"><i class="ph-bold ph-cursor-click"></i></span>
+                  <div>
+                    <h3>Selection rule</h3>
+                    <p>There is no hidden reactivation state: marker click toggles the label, label click makes that label active, and removing an active label removes its notes.</p>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section class="help-section">
+              <h2>Sidebar Usage</h2>
+              <p>The sidebar is used from top to bottom: choose what kind of monument you want to examine, then choose the individual site, then optionally return to a saved view.</p>
+              <div class="help-guide-list">
+                <div class="help-guide-item">
+                  <span class="help-sidebar-icon"><i class="ph-bold ph-list-checks"></i></span>
+                  <div>
+                    <h3>1. Choose a Monument Type</h3>
+                    <p>Open <strong>Monument Types</strong> and select a class such as passage tomb, wedge tomb, barrow, church, cross, or another enabled type. The application then queries the Ireland and Northern Ireland monument services and rebuilds the Sites list for that selected class.</p>
+                  </div>
+                </div>
+                <div class="help-guide-item">
+                  <span class="help-sidebar-icon"><i class="ph-bold ph-map-pin"></i></span>
+                  <div>
+                    <h3>2. Select a Site</h3>
+                    <p>Use the <strong>Sites</strong> cards to choose a monument. Each card gives the display name, SMR reference, and county. Selecting a site loads the terrain, places the selected marker, opens the selected label, and prepares the notes/detail tools for that monument.</p>
+                  </div>
+                </div>
+                <div class="help-guide-item">
+                  <span class="help-sidebar-icon"><i class="ph-bold ph-sort-ascending"></i></span>
+                  <div>
+                    <h3>3. Refine the Site List</h3>
+                    <p>Use <strong>Sort by County</strong> when you want the Sites list grouped geographically. This is useful when a monument type returns a long list across the island and you want to work through one county or border area at a time.</p>
+                  </div>
+                </div>
+                <div class="help-guide-item">
+                  <span class="help-sidebar-icon"><i class="ph-bold ph-bookmark-simple"></i></span>
+                  <div>
+                    <h3>4. Return to Saved Views</h3>
+                    <p>Use <strong>Saved Views</strong> to reopen a named state. A saved view can restore the selected site, camera angle, visible marker modes, open labels, ranges, sidebar visibility, and control visibility.</p>
+                  </div>
+                </div>
+                <div class="help-guide-item">
+                  <span class="help-sidebar-icon"><i class="ph-bold ph-caret-down"></i></span>
+                  <div>
+                    <h3>Panel toggles</h3>
+                    <p>Use the caret or plus/minus button on a sidebar panel header to expand or collapse that panel. This keeps the sidebar manageable when long monument or site lists are loaded.</p>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section class="help-section">
+              <h2>Configuration</h2>
+              <p>Configuration changes what is available in the viewer and how the landscape is presented. These controls are collapsed by default so the normal site-selection workflow remains clear.</p>
+              <div class="help-guide-list">
+                <div class="help-guide-item">
+                  <span class="help-sidebar-icon"><i class="ph-bold ph-floppy-disk"></i></span>
+                  <div>
+                    <h3>Saved Views</h3>
+                    <p>Turn stored views on when you want named views to persist in this browser. Use <strong>Purge Saved Views</strong> when you want to remove all stored view data from IndexedDB and start again. This affects this browser only.</p>
+                  </div>
+                </div>
+                <div class="help-guide-item">
+                  <span class="help-sidebar-icon"><i class="ph-bold ph-check-square"></i></span>
+                  <div>
+                    <h3>Save Monument Selection</h3>
+                    <p>Leave this on if your chosen monument type set should survive a refresh. If the type list becomes too broad or too narrow, use <strong>Reset Defaults</strong> to restore the application’s default monument selection.</p>
+                  </div>
+                </div>
+                <div class="help-guide-item">
+                  <span class="help-sidebar-icon"><i class="ph-bold ph-sliders-horizontal"></i></span>
+                  <div>
+                    <h3>Presets</h3>
+                    <p>Tick or untick monument classes in <strong>Presets</strong>. Those choices directly control which classes appear in <strong>Monument Types</strong>, so this is where you build the working category set for the session.</p>
+                  </div>
+                </div>
+                <div class="help-guide-item">
+                  <span class="help-sidebar-icon"><i class="ph-bold ph-image"></i></span>
+                  <div>
+                    <h3>Aerial Imagery</h3>
+                    <p>Select the imagery layer used on the terrain. <strong>Google Satellite</strong>, <strong>Esri Clarity</strong>, and <strong>Terrain</strong> can reveal different landscape evidence, from field boundaries to landform context.</p>
+                  </div>
+                </div>
+                <div class="help-guide-item">
+                  <span class="help-sidebar-icon"><i class="ph-bold ph-share-network"></i></span>
+                  <div>
+                    <h3>Display Options</h3>
+                    <p>Use <strong>Display Visibility</strong> to change overlay opacity. Turn on notes, legend, related markers, all relational markers, all monuments, or all labels as needed. The <strong>Type range</strong> and <strong>All relational range</strong> sliders set the query radius from 0 to 20 km.</p>
+                  </div>
+                </div>
+                <div class="help-guide-item">
+                  <span class="help-sidebar-icon"><i class="ph-bold ph-mountains"></i></span>
+                  <div>
+                    <h3>Terrain Controls</h3>
+                    <p>Use <strong>Height Exaggeration</strong> to increase or reduce relief. Choose <strong>Standard DEM Area</strong> for the normal footprint or <strong>Double DEM Area</strong> when a wider high-resolution terrain and imagery patch is needed.</p>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section class="help-section">
+              <h2>About</h2>
+              <div class="brand-logo help-logo-inline" aria-label="Archaeoscapes">
+                <i class="fa-solid fa-landmark"></i>
+                <span>Archaeoscapes</span>
+              </div>
+              <p class="help-credit">developed by<br><strong>Brian Doyle</strong><br>2026</p>
+              <p><strong>Licence.</strong> The code is issued using Creative Commons - Attribution 4.0 International - CC BY 4.0.</p>
+              <p><strong>Disclaimer.</strong> This application and its outputs are provided for research, educational, and exploratory use only. Data, terrain, imagery, derived views, positional information, classifications, and interpretive material may contain errors or omissions and should not be treated as legal, planning, conservation, excavation, navigation, or safety advice. Users should verify all information against the relevant official sources before relying on it.</p>
+              <p><strong>Attributions.</strong></p>
+              <ul>
+                <li>Elevation data: Terrarium-format public elevation tiles from AWS Open Data / Mapzen-derived terrain tiles.</li>
+                <li>Imagery: Esri World Imagery / Esri World Imagery Clarity.</li>
+                <li>Imagery: Google satellite tile service where selected by the user.</li>
+                <li>Monument data, Ireland: National Monuments Service Sites and Monuments Record Open Data.</li>
+                <li>Monument data, Northern Ireland: Historic Environment Division / Department for Communities HED and NISMR public datasets.</li>
+              </ul>
+            </section>
+          </article>
+        </div>
+      </section>
+
+      <div id="notes-inline" class="notes-inline hidden" aria-live="polite">
+        <div class="notes-controls">
+          <div class="notes-controls-left">
+            <button id="notes-open-gmaps" class="notes-ctlbtn" type="button" aria-label="Open in Google Maps" title="Open in Google Maps">
+              <i class="ph-bold ph-map-pin"></i>
+            </button>
+            <button id="notes-open-nms" class="notes-ctlbtn" type="button" aria-label="Open in National Monuments Viewer" title="Open in National Monuments Viewer">
+              <i class="ph-bold ph-browser"></i>
+            </button>
+          </div>
+          <div class="notes-controls-right">
+            <button id="notes-view" class="notes-ctlbtn" type="button" aria-label="View" title="View">
+              <i class="ph-bold ph-eye"></i>
+            </button>
+            <button id="notes-more" class="notes-ctlbtn" type="button" aria-label="Details" title="Details" aria-pressed="false">
+              <i class="ph-bold ph-dots-three-outline"></i>
+            </button>
+            <button id="notes-bg-toggle" class="notes-ctlbtn" type="button" aria-label="Toggle notes background" title="Toggle notes background">
+              <i class="ph-bold ph-lightbulb"></i>
+            </button>
+            <button id="notes-close" class="notes-ctlbtn" type="button" aria-label="Close notes" title="Close notes">
+              <i class="ph-bold ph-x"></i>
+            </button>
+          </div>
+        </div>
+        <div class="notes-scroll" id="notes-scroll">
+          <div id="notes-inline-text" class="notes-inline-text"></div>
+          <div id="notes-inline-details" class="notes-inline-details hidden" aria-live="polite">
+            <div class="notes-detail-row">
+              <div class="notes-detail-kv">
+                <span class="k">Lat</span>
+                <span id="notes-lat" class="v">--</span>
+                <button id="copy-lat" class="notes-copybtn" type="button" aria-label="Copy latitude" title="Copy latitude">
+                  <i class="ph-bold ph-copy"></i>
+                </button>
+              </div>
+              <div class="notes-detail-kv">
+                <span class="k">Lon</span>
+                <span id="notes-lon" class="v">--</span>
+                <button id="copy-lon" class="notes-copybtn" type="button" aria-label="Copy longitude" title="Copy longitude">
+                  <i class="ph-bold ph-copy"></i>
+                </button>
+              </div>
+            </div>
+            <div id="notes-detail-table-wrap" class="notes-detail-table-wrap"></div>
+          </div>
+        </div>
+      </div>
+
+      <div id="legend-inline" class="legend-inline hidden" aria-live="polite">
+        <div class="notes-controls">
+          <button id="legend-bg-toggle" class="notes-ctlbtn" type="button" aria-label="Toggle legend background" title="Toggle legend background">
+            <i class="ph-bold ph-lightbulb"></i>
+          </button>
+          <button id="legend-close" class="notes-ctlbtn" type="button" aria-label="Close legend" title="Close legend">
+            <i class="ph-bold ph-x"></i>
+          </button>
+        </div>
+        <div class="legend-scroll" id="legend-scroll">
+          <div id="legend-inline-list" class="legend-inline-list"></div>
+        </div>
+      </div>
+
+      <div id="map-wrap" class="map-wrap">
+        <div id="map"></div>
+      </div>
+
+      <svg id="label-lines" class="label-lines" aria-hidden="true"></svg>
+      <div id="label-layer" class="label-layer" aria-hidden="true"></div>
+      <div id="marker-layer" class="marker-layer" aria-hidden="true"></div>
+
+      <div class="controls">
+        <button data-action="zoom-in" data-tip="Zoom in" aria-label="Zoom in"><i class="ph-bold ph-plus"></i></button>
+        <button data-action="zoom-out" data-tip="Zoom out" aria-label="Zoom out"><i class="ph-bold ph-minus"></i></button>
+        <button data-action="move-forward" data-tip="Move forward" aria-label="Move forward"><i class="ph-bold ph-arrow-up"></i></button>
+        <button data-action="move-back" data-tip="Move back" aria-label="Move back"><i class="ph-bold ph-arrow-down"></i></button>
+        <button data-action="move-left" data-tip="Move left" aria-label="Move left"><i class="ph-bold ph-arrow-left"></i></button>
+        <button data-action="move-right" data-tip="Move right" aria-label="Move right"><i class="ph-bold ph-arrow-right"></i></button>
+        <button data-action="pitch-down" data-tip="Pitch down" aria-label="Pitch down"><i class="ph-bold ph-trend-down"></i></button>
+        <button data-action="pitch-up" data-tip="Pitch up" aria-label="Pitch up"><i class="ph-bold ph-trend-up"></i></button>
+        <button data-action="rotate-left" data-tip="Rotate left" aria-label="Rotate left"><i class="ph-bold ph-arrow-counter-clockwise"></i></button>
+        <button data-action="rotate-right" data-tip="Rotate right" aria-label="Rotate right"><i class="ph-bold ph-arrow-clockwise"></i></button>
+      </div>
+
+      <div class="readout">
+        <span>Zoom <b id="zoom-readout">--</b></span>
+        <span>Pitch <b id="pitch-readout">--</b>°</span>
+        <span>Bearing <b id="bearing-readout">--</b>°</span>
+      </div>
+    </main>
+  </div>
+
+  <script src="./megicon/megicon.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>
