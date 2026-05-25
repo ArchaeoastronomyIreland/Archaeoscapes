@@ -2110,6 +2110,12 @@
   }
 
   function bindContinuousActionButtons(container, applyAction) {
+    if (window.ArchaeoscapesMobileControls?.bindContinuousActionButtons) {
+      return window.ArchaeoscapesMobileControls.bindContinuousActionButtons(container, {
+        onStart: () => closeLabelPopup(),
+        onAction: applyAction
+      });
+    }
     if (!container) return;
     let active = null;
 
