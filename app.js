@@ -208,6 +208,7 @@
   const stageToolbarLeft = document.getElementById('stage-toolbar-left');
   const toggleSidebarBtn = document.getElementById('toggle-sidebar');
   const hideControlsBtn = document.getElementById('hide-controls');
+  const fullscreenViewBtn = document.getElementById('fullscreen-view');
   const saveViewBtn = document.getElementById('save-view');
   const copyViewBtn = document.getElementById('copy-view');
   const captureViewBtn = document.getElementById('capture-view');
@@ -2062,6 +2063,93 @@
     scheduleTerrainReloadIfNeeded(false);
   }
 
+  function cameraStepMeters(multiplier = 1) {
+    return Math.max(90, Math.min(2200, cameraState.distance * 0.9)) * multiplier;
+  }
+
+  function applyCameraAction(action, dtSeconds = 1 / 60, holdSeconds = 0) {
+    const dt = Math.max(0.001, Math.min(0.08, Number(dtSeconds) || 1 / 60));
+    const accel = Math.min(2.8, 1 + Math.max(0, holdSeconds - 0.35) * 1.6);
+    const moveM = cameraStepMeters(dt * accel);
+    const rotateDeg = 70 * dt * accel;
+    const pitchDeg = 34 * dt * accel;
+    const zoomRate = 1.8 * dt * accel;
+    let movedFocus = false;
+
+    if (action === 'zoom-in') {
+      cameraState.distance = Math.max(380, cameraState.distance / (1 + zoomRate));
+      if (cameraState.distance < 1100) {
+        moveFocus(Math.max(18, cameraState.distance * 0.035 * accel), 0);
+        return;
+      }
+    } else if (action === 'zoom-out') {
+      cameraState.distance = Math.min(6500, cameraState.distance * (1 + zoomRate));
+    } else if (action === 'move-forward') {
+      moveFocus(moveM, 0);
+      movedFocus = true;
+    } else if (action === 'move-back') {
+      moveFocus(-moveM, 0);
+      movedFocus = true;
+    } else if (action === 'move-left') {
+      moveFocus(0, -moveM);
+      movedFocus = true;
+    } else if (action === 'move-right') {
+      moveFocus(0, moveM);
+      movedFocus = true;
+    } else if (action === 'pitch-up') {
+      cameraState.pitch = Math.min(78, cameraState.pitch + pitchDeg);
+    } else if (action === 'pitch-down') {
+      cameraState.pitch = Math.max(8, cameraState.pitch - pitchDeg);
+    } else if (action === 'rotate-left') {
+      cameraState.bearing -= rotateDeg;
+    } else if (action === 'rotate-right') {
+      cameraState.bearing += rotateDeg;
+    }
+
+    if (!movedFocus) updateCamera();
+  }
+
+  function bindContinuousActionButtons(container, applyAction) {
+    if (!container) return;
+    let active = null;
+
+    const stop = () => {
+      if (!active) return;
+      cancelAnimationFrame(active.raf);
+      active.button.classList.remove('is-held');
+      active = null;
+    };
+
+    const tick = (now) => {
+      if (!active) return;
+      const dt = (now - active.lastTime) / 1000;
+      const held = (now - active.startTime) / 1000;
+      active.lastTime = now;
+      applyAction(active.action, dt, held);
+      active.raf = requestAnimationFrame(tick);
+    };
+
+    container.addEventListener('pointerdown', (e) => {
+      const button = e.target.closest('button[data-action]');
+      if (!button || !container.contains(button)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      closeLabelPopup();
+      stop();
+      const action = button.getAttribute('data-action');
+      const now = performance.now();
+      active = { button, action, startTime: now, lastTime: now, raf: 0 };
+      button.classList.add('is-held');
+      try { button.setPointerCapture(e.pointerId); } catch (_) {}
+      applyAction(action, 1 / 60, 0);
+      active.raf = requestAnimationFrame(tick);
+    });
+
+    ['pointerup', 'pointercancel', 'pointerleave', 'lostpointercapture'].forEach((eventName) => {
+      container.addEventListener(eventName, stop);
+    });
+  }
+
   function distanceMeters(lat1, lon1, lat2, lon2) {
     const R = 6371000;
     const p1 = lat1 * Math.PI / 180;
@@ -3007,6 +3095,41 @@
     resize();
   }
 
+  function isFullscreen() {
+    return !!document.fullscreenElement;
+  }
+
+  function syncFullscreenButton() {
+    if (!fullscreenViewBtn) return;
+    const on = isFullscreen();
+    fullscreenViewBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    fullscreenViewBtn.setAttribute('data-tip', on ? 'Exit fullscreen' : 'Fullscreen');
+    fullscreenViewBtn.setAttribute('aria-label', on ? 'Exit fullscreen' : 'Fullscreen');
+    const icon = fullscreenViewBtn.querySelector('i');
+    if (icon) icon.className = on ? 'ph-bold ph-arrows-in' : 'ph-bold ph-arrows-out';
+    window.setTimeout(resize, 80);
+    resize();
+  }
+
+  async function toggleFullscreen() {
+    if (!document.fullscreenEnabled && !document.webkitFullscreenEnabled) return;
+    const shell = document.querySelector('.app-shell') || document.documentElement;
+    try {
+      if (isFullscreen()) {
+        if (document.exitFullscreen) await document.exitFullscreen();
+        else if (document.webkitExitFullscreen) await document.webkitExitFullscreen();
+      } else if (shell.requestFullscreen) {
+        await shell.requestFullscreen({ navigationUI: 'hide' });
+      } else if (shell.webkitRequestFullscreen) {
+        await shell.webkitRequestFullscreen();
+      }
+    } catch (e) {
+      console.warn('Fullscreen request failed', e);
+    } finally {
+      syncFullscreenButton();
+    }
+  }
+
   function setHelpOpen(open) {
     if (!helpOverlay) return;
     helpOverlay.classList.toggle('hidden', !open);
@@ -3428,27 +3551,7 @@
     return div.innerHTML;
   }
 
-  document.querySelector('.controls').addEventListener('click', (e) => {
-    const btn = e.target.closest('button[data-action]');
-    if (!btn) return;
-    closeLabelPopup();
-    const action = btn.getAttribute('data-action');
-    const step = Math.max(120, Math.min(650, cameraState.distance * 0.18));
-    if (action === 'zoom-in') {
-      cameraState.distance = Math.max(380, cameraState.distance * 0.82);
-      if (cameraState.distance < 1100) moveFocus(step * 0.35, 0);
-    }
-    if (action === 'zoom-out') cameraState.distance = Math.min(6500, cameraState.distance * 1.22);
-    if (action === 'move-forward') moveFocus(step, 0);
-    if (action === 'move-back') moveFocus(-step, 0);
-    if (action === 'move-left') moveFocus(0, -step);
-    if (action === 'move-right') moveFocus(0, step);
-    if (action === 'pitch-up') cameraState.pitch = Math.min(78, cameraState.pitch + 5);
-    if (action === 'pitch-down') cameraState.pitch = Math.max(8, cameraState.pitch - 5);
-    if (action === 'rotate-left') cameraState.bearing -= 15;
-    if (action === 'rotate-right') cameraState.bearing += 15;
-    updateCamera();
-  });
+  bindContinuousActionButtons(document.querySelector('.controls'), applyCameraAction);
 
   // Stage toolbar (top-left)
   if (toggleSidebarBtn) {
@@ -3466,6 +3569,15 @@
       const hidden = !!shell?.classList.contains('controls-hidden');
       setControlsHidden(!hidden);
     });
+  }
+  if (fullscreenViewBtn) {
+    fullscreenViewBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleFullscreen();
+    });
+    document.addEventListener('fullscreenchange', syncFullscreenButton);
+    document.addEventListener('webkitfullscreenchange', syncFullscreenButton);
+    syncFullscreenButton();
   }
   if (helpViewBtn) {
     helpViewBtn.addEventListener('click', (e) => {
@@ -3761,28 +3873,94 @@
     updateCamera();
   });
 
-  let dragging = false;
-  let last = null;
+  const stagePointers = new Map();
+  let stageGesture = null;
+
+  function pointerList() {
+    return Array.from(stagePointers.values());
+  }
+
+  function distanceBetweenPointers(a, b) {
+    return Math.hypot(a.x - b.x, a.y - b.y);
+  }
+
+  function midpointBetweenPointers(a, b) {
+    return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+  }
+
+  function panFocusFromScreenDelta(dx, dy) {
+    if (!currentFocus) return;
+    const metersPerPixel = Math.max(0.8, cameraState.distance / 520);
+    moveFocus(dy * metersPerPixel, -dx * metersPerPixel);
+  }
+
   renderer.domElement.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
     closeLabelPopup();
-    dragging = true;
-    last = { x: e.clientX, y: e.clientY };
-    renderer.domElement.setPointerCapture(e.pointerId);
-  });
+    stagePointers.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType });
+    try { renderer.domElement.setPointerCapture(e.pointerId); } catch (_) {}
+    const points = pointerList();
+    if (points.length >= 2) {
+      const [a, b] = points;
+      stageGesture = {
+        mode: 'pinch-pan',
+        distance: distanceBetweenPointers(a, b),
+        midpoint: midpointBetweenPointers(a, b)
+      };
+    } else {
+      stageGesture = { mode: 'orbit', last: { x: e.clientX, y: e.clientY } };
+    }
+  }, { passive: false });
+
   renderer.domElement.addEventListener('pointermove', (e) => {
-    if (!dragging || !last) return;
-    const dx = e.clientX - last.x;
-    const dy = e.clientY - last.y;
+    if (!stagePointers.has(e.pointerId) || !stageGesture) return;
+    e.preventDefault();
+    stagePointers.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType });
+    const points = pointerList();
+    if (points.length >= 2) {
+      const [a, b] = points;
+      const nextDistance = distanceBetweenPointers(a, b);
+      const nextMidpoint = midpointBetweenPointers(a, b);
+      if (stageGesture.mode !== 'pinch-pan') {
+        stageGesture = { mode: 'pinch-pan', distance: nextDistance, midpoint: nextMidpoint };
+        return;
+      }
+      const scale = nextDistance > 0 && stageGesture.distance > 0 ? stageGesture.distance / nextDistance : 1;
+      const dx = nextMidpoint.x - stageGesture.midpoint.x;
+      const dy = nextMidpoint.y - stageGesture.midpoint.y;
+      cameraState.distance = Math.max(380, Math.min(6500, cameraState.distance * scale));
+      panFocusFromScreenDelta(dx, dy);
+      stageGesture.distance = nextDistance;
+      stageGesture.midpoint = nextMidpoint;
+      updateCamera();
+      return;
+    }
+
+    if (stageGesture.mode !== 'orbit') {
+      stageGesture = { mode: 'orbit', last: { x: e.clientX, y: e.clientY } };
+      return;
+    }
+    const dx = e.clientX - stageGesture.last.x;
+    const dy = e.clientY - stageGesture.last.y;
     cameraState.bearing -= dx * 0.22;
     cameraState.pitch = Math.max(8, Math.min(78, cameraState.pitch + dy * 0.12));
-    last = { x: e.clientX, y: e.clientY };
+    stageGesture.last = { x: e.clientX, y: e.clientY };
     updateCamera();
-  });
-  renderer.domElement.addEventListener('pointerup', (e) => {
-    dragging = false;
-    last = null;
+  }, { passive: false });
+
+  function releaseStagePointer(e) {
+    stagePointers.delete(e.pointerId);
     try { renderer.domElement.releasePointerCapture(e.pointerId); } catch (_) {}
-  });
+    const points = pointerList();
+    if (points.length === 1) {
+      stageGesture = { mode: 'orbit', last: { x: points[0].x, y: points[0].y } };
+    } else if (points.length === 0) {
+      stageGesture = null;
+    }
+  }
+
+  renderer.domElement.addEventListener('pointerup', releaseStagePointer);
+  renderer.domElement.addEventListener('pointercancel', releaseStagePointer);
   renderer.domElement.addEventListener('wheel', (e) => {
     e.preventDefault();
     closeLabelPopup();
@@ -3795,13 +3973,33 @@
 
   window.addEventListener('keydown', (e) => {
     if (e.target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) return;
-    const step = Math.max(120, Math.min(650, cameraState.distance * 0.18));
-    const movesView = ['w', 's', 'a', 'd', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key);
-    if (movesView) closeLabelPopup();
-    if (e.key === 'w' || e.key === 'ArrowUp') moveFocus(step, 0);
-    if (e.key === 's' || e.key === 'ArrowDown') moveFocus(-step, 0);
-    if (e.key === 'a' || e.key === 'ArrowLeft') moveFocus(0, -step);
-    if (e.key === 'd' || e.key === 'ArrowRight') moveFocus(0, step);
+    const actionByKey = {
+      w: 'move-forward',
+      W: 'move-forward',
+      ArrowUp: 'move-forward',
+      s: 'move-back',
+      S: 'move-back',
+      ArrowDown: 'move-back',
+      a: 'move-left',
+      A: 'move-left',
+      ArrowLeft: 'move-left',
+      d: 'move-right',
+      D: 'move-right',
+      ArrowRight: 'move-right',
+      '+': 'zoom-in',
+      '=': 'zoom-in',
+      '-': 'zoom-out',
+      '_': 'zoom-out',
+      q: 'rotate-left',
+      Q: 'rotate-left',
+      e: 'rotate-right',
+      E: 'rotate-right'
+    };
+    const action = actionByKey[e.key];
+    if (!action) return;
+    e.preventDefault();
+    closeLabelPopup();
+    applyCameraAction(action, e.repeat ? 1 / 12 : 1 / 8, e.repeat ? 0.7 : 0);
   });
 
   window.addEventListener('resize', resize);

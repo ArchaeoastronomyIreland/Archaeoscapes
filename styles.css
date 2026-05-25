@@ -16,18 +16,25 @@
 }
 
 * { box-sizing: border-box; }
-html, body { height: 100%; margin: 0; }
+html, body {
+  height: 100%;
+  min-height: 100%;
+  margin: 0;
+}
 body {
   font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   color: var(--slate-700);
   background: var(--slate-100);
   overflow: hidden;
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .app-shell {
   height: 100vh;
+  height: 100dvh;
+  min-height: 100svh;
   display: flex;
-  min-height: 0;
 }
 
 .sidebar {
@@ -997,12 +1004,16 @@ body {
   width: 100%;
   height: 100%;
   background: transparent;
+  touch-action: none;
+  user-select: none;
 }
 
 #map canvas {
   display: block;
   width: 100%;
   height: 100%;
+  touch-action: none;
+  user-select: none;
 }
 
 .leaflet-control-container { display: none; }
@@ -1030,6 +1041,8 @@ body {
   background: rgba(15,23,42,0.30);
   backdrop-filter: blur(14px);
   box-shadow: 0 20px 50px rgba(0,0,0,0.25);
+  touch-action: manipulation;
+  user-select: none;
 }
 
 .controls button {
@@ -1044,6 +1057,9 @@ body {
   align-items: center;
   justify-content: center;
   position: relative;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .controls button i {
@@ -1076,6 +1092,13 @@ body {
 .controls button:hover {
   background: rgba(14,165,233,0.36);
   border-color: rgba(125,211,252,0.5);
+}
+
+.controls button.is-held,
+.controls button:active {
+  background: rgba(14,165,233,0.52);
+  border-color: rgba(125,211,252,0.78);
+  transform: translateY(1px);
 }
 
 .display-toolbar {
@@ -1858,6 +1881,8 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  touch-action: manipulation;
+  user-select: none;
 }
 .label-popup-tools:hover {
   background: rgba(255,255,255,0.12);
@@ -2041,8 +2066,73 @@ body {
 }
 
 @media (max-width: 860px) {
-  .app-shell { flex-direction: column; }
-  .sidebar { width: 100%; max-height: 42vh; }
-  .tour-stage { min-height: 58vh; }
+  .app-shell {
+    flex-direction: column;
+    height: 100dvh;
+    min-height: 100svh;
+    padding-top: env(safe-area-inset-top);
+  }
+
+  .sidebar {
+    width: 100%;
+    flex: 0 0 auto;
+    max-height: min(34dvh, 300px);
+  }
+
+  .sidebar-scroll {
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .tour-stage {
+    min-height: 0;
+    flex: 1 1 auto;
+  }
+
   .map-wrap { inset: -14%; }
+
+  .topbar {
+    top: max(8px, env(safe-area-inset-top));
+    left: max(8px, env(safe-area-inset-left));
+    right: max(8px, env(safe-area-inset-right));
+    gap: 8px;
+  }
+
+  .topbar-right {
+    max-width: 52vw;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .topbar-right::-webkit-scrollbar { display: none; }
+
+  .display-toolbar .display-btn {
+    width: 44px;
+    height: 44px;
+    flex: 0 0 44px;
+  }
+
+  .controls {
+    right: max(10px, env(safe-area-inset-right));
+    bottom: max(10px, env(safe-area-inset-bottom));
+    grid-template-columns: repeat(2, 48px);
+    gap: 7px;
+    padding: 8px;
+    border-radius: 16px;
+    background: rgba(15,23,42,0.36);
+  }
+
+  .controls button {
+    min-height: 46px;
+    border-radius: 13px;
+  }
+
+  .controls button[data-tip]::after,
+  .display-toolbar-hint {
+    display: none;
+  }
+
+  .readout {
+    left: max(10px, env(safe-area-inset-left));
+    bottom: max(10px, env(safe-area-inset-bottom));
+  }
 }

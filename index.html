@@ -2,7 +2,12 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#24102f" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <link rel="manifest" href="./manifest.webmanifest" />
   <title>Terrarium Site Tour</title>
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -339,6 +344,9 @@
           <button id="hide-controls" class="display-btn" type="button" data-tip="Hide Controls" aria-label="Hide Controls" aria-pressed="false">
             <i class="ph-bold ph-square"></i>
           </button>
+          <button id="fullscreen-view" class="display-btn" type="button" data-tip="Fullscreen" aria-label="Fullscreen" aria-pressed="false">
+            <i class="ph-bold ph-arrows-out"></i>
+          </button>
           <button id="save-view" class="display-btn" type="button" data-tip="Save View" aria-label="Save View">
             <i class="ph-bold ph-floppy-disk"></i>
           </button>
@@ -410,6 +418,7 @@
               <div class="help-control-grid">
                 <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-sidebar-simple"></i></span><strong>Show/Hide sidebar</strong><span>Expands or collapses the sidebar to give more room to the landscape.</span></div>
                 <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-square"></i></span><strong>Hide Controls</strong><span>Reduces the interface for clean screen captures.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-arrows-out"></i></span><strong>Fullscreen</strong><span>Requests browser fullscreen where supported, useful on phones where the address bar consumes view height.</span></div>
                 <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-floppy-disk"></i></span><strong>Save View</strong><span>Stores the current view, selected site, visible markers, labels, ranges, and UI state.</span></div>
                 <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-link-simple"></i></span><strong>Copy View URL</strong><span>Copies a shareable link for the current view state.</span></div>
                 <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-question"></i></span><strong>Help</strong><span>Opens this help page over the view area.</span></div>
@@ -456,7 +465,7 @@
 
             <section class="help-section">
               <h2>Movement Controls</h2>
-              <p>The bottom-right movement controls move the camera through the landscape. Use these after a site loads to inspect the monument from different heights and directions.</p>
+              <p>The bottom-right movement controls move the camera through the landscape. Press and hold a control for smooth movement; on touch screens, one-finger drag rotates/pitches, two-finger drag pans, and pinch zooms.</p>
               <div class="help-control-grid">
                 <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-plus"></i></span><strong>Zoom in</strong><span>Moves the camera closer to the terrain and selected focus area.</span></div>
                 <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-minus"></i></span><strong>Zoom out</strong><span>Moves the camera further away to show more surrounding landscape.</span></div>

@@ -1,0 +1,9 @@
+{
+  "name": "Archaeoscapes",
+  "short_name": "Archaeoscapes",
+  "description": "Landscape viewer for exploring archaeological monuments in terrain context.",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#24102f",
+  "theme_color": "#24102f"
+}
