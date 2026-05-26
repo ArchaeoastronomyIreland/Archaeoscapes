@@ -35,13 +35,14 @@ body {
   height: 100dvh;
   min-height: 100svh;
   display: flex;
+  position: relative;
 }
 
 .sidebar {
   width: 340px;
   background: rgba(255,255,255,0.94);
   border-right: 0; /* remove thin light edge */
-  box-shadow: 8px 0 30px rgba(15,23,42,0.08);
+  box-shadow: none;
   z-index: 20;
   position: relative;
   overflow: hidden;
@@ -50,23 +51,47 @@ body {
   transition: width 240ms ease, transform 240ms ease, opacity 240ms ease;
 }
 
-.sidebar-header {
+.sidebar-peek {
   position: absolute;
-  top: 0;
   left: 0;
-  right: 0;
-  height: var(--sidebar-chrome-h);
-  z-index: 2;
+  top: 0;
+  bottom: 0;
+  z-index: 19;
+  width: 0;
+  flex: none;
+  min-width: 0;
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+  background: rgba(255,255,255,0.94);
+  color: var(--slate-700);
+  box-shadow: none;
+  backdrop-filter: blur(10px);
+  cursor: pointer;
+  opacity: 0;
+  visibility: hidden;
+  overflow: hidden;
+  pointer-events: none;
+  transition: flex-basis 240ms ease, width 240ms ease, opacity 180ms ease, background 140ms ease;
+  touch-action: manipulation;
+}
+
+.sidebar-peek i {
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 18px;
+  line-height: 1;
 }
 
 .sidebar-scroll {
   position: absolute;
   left: 0;
   right: 0;
-  top: var(--sidebar-chrome-h);
+  top: 0;
   bottom: 0;
-  overflow-y: scroll; /* keep scrollbar consistently present */
-  scrollbar-gutter: stable; /* reserve space (prevents vanish/jitter) */
+  overflow-y: auto;
   -webkit-overflow-scrolling: touch;
 }
 
@@ -97,6 +122,22 @@ body {
   pointer-events: none;
 }
 
+.app-shell.sidebar-hidden .sidebar-peek {
+  width: 42px;
+  flex-basis: auto;
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  border-right: 1px solid rgba(226,232,240,0.90);
+  box-shadow: 8px 0 30px rgba(15,23,42,0.08);
+}
+
+.app-shell.sidebar-hidden .sidebar-peek:hover,
+.app-shell.sidebar-hidden .sidebar-peek:focus-visible {
+  background: #f0f9ff;
+  outline: none;
+}
+
 .app-shell.controls-hidden .controls,
 .app-shell.controls-hidden .readout,
 .app-shell.controls-hidden .topbar-right {
@@ -121,16 +162,6 @@ body {
   border: 1px solid rgba(255,255,255,0.20);
   background: rgba(15,23,42,0.38);
   border-radius: 12px;
-}
-
-.brand {
-  width: 100%;
-  height: var(--sidebar-chrome-h);
-  background: #24102f; /* dark purple, flat */
-  border-bottom: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
 }
 
 .brand-logo {
@@ -737,6 +768,58 @@ body {
   accent-color: var(--accent);
 }
 
+.compact-title {
+  margin-top: 2px;
+  margin-bottom: 8px;
+  letter-spacing: 0.14em;
+}
+
+.observer-location-form {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 7px;
+  padding: 12px;
+}
+
+.location-hint {
+  margin: 0 0 4px 0;
+}
+
+.observer-location-form label {
+  color: var(--slate-600);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.coord-input {
+  width: 100%;
+  border: 1px solid var(--slate-200);
+  border-radius: 10px;
+  padding: 9px 10px;
+  color: var(--slate-800);
+  font: 600 13px/1.2 "JetBrains Mono", monospace;
+  outline: none;
+}
+
+.coord-input:focus {
+  border-color: #7dd3fc;
+  box-shadow: 0 0 0 3px rgba(14,165,233,0.14);
+}
+
+.observer-status {
+  margin-top: 2px;
+  font-size: 11px;
+}
+
+.browse-by-type {
+  margin: 12px 12px 0;
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--slate-700);
+}
+
 .hint.small {
   font-size: 11px;
   margin-bottom: 0;
@@ -747,6 +830,7 @@ body {
   flex: 1;
   min-width: 0;
   overflow: hidden;
+  transition: margin-left 240ms ease;
   /* Pre-load state uses a neutral grey background (DEM not ready). */
   background-color: #e2e8f0;
   background-image:
@@ -756,6 +840,10 @@ body {
     /* major grid */
     repeating-linear-gradient(0deg, rgba(15,23,42,0.11) 0 1px, transparent 1px 100px),
     repeating-linear-gradient(90deg, rgba(15,23,42,0.11) 0 1px, transparent 1px 100px);
+}
+
+.app-shell.sidebar-hidden .tour-stage {
+  margin-left: 42px;
 }
 
 .tour-stage.dem-ready {
@@ -821,7 +909,7 @@ body {
   align-items: center;
   justify-content: center;
   gap: clamp(14px, 2.4vw, 34px);
-  color: rgba(71,85,105,0.26);
+  color: rgba(36,16,47,0.30);
   font-family: "Montserrat", sans-serif;
   font-size: clamp(28px, 5.4vw, 86px);
   font-weight: 300;
@@ -832,7 +920,7 @@ body {
 }
 
 .stage-loading-logo i {
-  color: rgba(71,85,105,0.22);
+  color: rgba(242,184,75,0.30);
   font-size: 1.45em;
   line-height: 1;
 }
@@ -1508,6 +1596,31 @@ body {
 
 .readout b { color: white; font-weight: 800; }
 
+.stage-brandmark {
+  position: absolute;
+  left: 18px;
+  bottom: 58px;
+  z-index: 12;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 14px;
+  color: rgba(255,255,255,0.30);
+  font-family: "Montserrat", sans-serif;
+  font-size: 27px;
+  font-weight: 300;
+  line-height: 1;
+  pointer-events: none;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.stage-brandmark i {
+  color: rgba(242,184,75,0.30);
+  font-size: 40px;
+  line-height: 1;
+}
+
 .label-layer,
 .label-lines {
   position: absolute;
@@ -2079,6 +2192,38 @@ body {
     max-height: min(34dvh, 300px);
   }
 
+  .app-shell.sidebar-hidden .sidebar {
+    width: 0;
+    max-height: 0;
+    flex-basis: 0;
+    transform: translateY(-100%);
+  }
+
+  .sidebar-peek {
+    width: 0;
+    height: 44px;
+    flex: none;
+    align-self: flex-start;
+    border-radius: 0 0 14px 0;
+    visibility: hidden;
+  }
+
+  .app-shell.sidebar-hidden .sidebar-peek {
+    width: 44px;
+    height: 44px;
+    flex: none;
+    align-self: flex-start;
+    border-radius: 0 0 14px 0;
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+  }
+
+  .sidebar-peek i {
+    top: 50%;
+    transform: translate(-50%, -50%);
+  }
+
   .sidebar-scroll {
     -webkit-overflow-scrolling: touch;
   }
@@ -2086,6 +2231,11 @@ body {
   .tour-stage {
     min-height: 0;
     flex: 1 1 auto;
+    margin-left: 0;
+  }
+
+  .app-shell.sidebar-hidden .tour-stage {
+    margin-left: 0;
   }
 
   .map-wrap { inset: -14%; }
@@ -2134,5 +2284,16 @@ body {
   .readout {
     left: max(10px, env(safe-area-inset-left));
     bottom: max(10px, env(safe-area-inset-bottom));
+  }
+
+  .stage-brandmark {
+    left: max(10px, env(safe-area-inset-left));
+    bottom: calc(max(10px, env(safe-area-inset-bottom)) + 40px);
+    font-size: 22px;
+    gap: 11px;
+  }
+
+  .stage-brandmark i {
+    font-size: 33px;
   }
 }

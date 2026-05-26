@@ -70,6 +70,9 @@
   const HORIZON_AERIAL_Z = 14;
   const HORIZON_TILE_RADIUS = 3; // wider, lower-resolution terrain skirt
   const GRID = 180;
+  const DEFAULT_OBSERVER_LAT = 53.490266;
+  const DEFAULT_OBSERVER_LNG = -7.5625666;
+  const OBSERVER_HEIGHT_OFFSET_M = 2;
 
   let sites = [];
   let activeType = null; // monumentClass (string)
@@ -135,7 +138,9 @@
     pitch: 8,
     bearing: 28,
     distance: 1850,
-    target: new THREE.Vector3(0, 80, 0)
+    target: new THREE.Vector3(0, 80, 0),
+    observerMode: false,
+    observerHeightOffsetM: OBSERVER_HEIGHT_OFFSET_M
   };
 
   const els = {
@@ -162,6 +167,10 @@
     presetList: document.getElementById('preset-list'),
     heightSlider: document.getElementById('height-exaggeration'),
     heightValue: document.getElementById('height-exaggeration-value'),
+    observerForm: document.getElementById('observer-location-form'),
+    observerLat: document.getElementById('observer-lat'),
+    observerLon: document.getElementById('observer-lon'),
+    observerStatus: document.getElementById('observer-status'),
     demAreaOptions: document.getElementById('dem-area-options'),
     showRelatedMonuments: document.getElementById('show-related-monuments'),
     relatedRange: document.getElementById('related-range'),
@@ -207,8 +216,10 @@
 
   const stageToolbarLeft = document.getElementById('stage-toolbar-left');
   const toggleSidebarBtn = document.getElementById('toggle-sidebar');
+  const sidebarPeekBtn = document.getElementById('sidebar-peek');
   const hideControlsBtn = document.getElementById('hide-controls');
   const fullscreenViewBtn = document.getElementById('fullscreen-view');
+  const panoramaViewBtn = document.getElementById('panorama-view');
   const saveViewBtn = document.getElementById('save-view');
   const copyViewBtn = document.getElementById('copy-view');
   const captureViewBtn = document.getElementById('capture-view');
@@ -2035,6 +2046,31 @@
     cameraState.target.set(local.x, (inside ? terrainYAtLocal(local.x, local.z) : 0) + 80, local.z);
   }
 
+  function observerCameraLocal() {
+    if (!cameraState.observerMode || !currentFocus || !currentPatch) return null;
+    const local = localFromLonLatUnbounded(currentFocus.lng, currentFocus.lat);
+    if (!local) return null;
+    const inside = Math.abs(local.x) <= currentPatch.patchMeters / 2 && Math.abs(local.z) <= currentPatch.patchMeters / 2;
+    const groundY = inside ? terrainYAtLocal(local.x, local.z) : 0;
+    return {
+      x: local.x,
+      y: groundY + cameraState.observerHeightOffsetM,
+      z: local.z,
+      groundY,
+      inside
+    };
+  }
+
+  function updateObserverStatus() {
+    if (!els.observerStatus) return;
+    const observer = observerCameraLocal();
+    if (!observer || !currentFocus) {
+      els.observerStatus.textContent = 'Observer camera not positioned yet.';
+      return;
+    }
+    els.observerStatus.textContent = `Camera at ${Number(currentFocus.lat).toFixed(6)}, ${Number(currentFocus.lng).toFixed(6)}; terrain ${(observer.groundY / Math.max(verticalExaggeration, 0.0001) + (baseCenterElev || 0)).toFixed(2)}m, camera Y ${observer.y.toFixed(2)}m.`;
+  }
+
   function scheduleTerrainReloadIfNeeded(force = false) {
     if (!currentFocus) return;
     if (force || !currentPatch) {
@@ -2065,6 +2101,10 @@
 
   function cameraStepMeters(multiplier = 1) {
     return Math.max(90, Math.min(2200, cameraState.distance * 0.9)) * multiplier;
+  }
+
+  function minimumPitchDeg() {
+    return cameraState.observerMode ? 0 : 8;
   }
 
   function applyCameraAction(action, dtSeconds = 1 / 60, holdSeconds = 0) {
@@ -2099,7 +2139,7 @@
     } else if (action === 'pitch-up') {
       cameraState.pitch = Math.min(78, cameraState.pitch + pitchDeg);
     } else if (action === 'pitch-down') {
-      cameraState.pitch = Math.max(8, cameraState.pitch - pitchDeg);
+      cameraState.pitch = Math.max(minimumPitchDeg(), cameraState.pitch - pitchDeg);
     } else if (action === 'rotate-left') {
       cameraState.bearing -= rotateDeg;
     } else if (action === 'rotate-right') {
@@ -2202,6 +2242,20 @@
       m.el?.remove?.();
     }
     allMonumentMarkers = [];
+  }
+
+  async function enableRelationalMonumentsForCurrentView() {
+    showRelatedMonuments = false;
+    showAllMonuments = false;
+    showAllRelational = true;
+    if (els.showRelatedMonuments) els.showRelatedMonuments.checked = false;
+    if (els.showAllMonuments) els.showAllMonuments.checked = false;
+    if (els.showAllRelational) els.showAllRelational.checked = true;
+    clearRelatedMarkers();
+    clearAllMonumentMarkers();
+    await loadRelationalMarkersInView();
+    syncShowAllLabelsState();
+    updateLegendPanel();
   }
 
   function clearLabelsByKind(kind) {
@@ -3000,6 +3054,8 @@
   }
 
   async function goToSite(site) {
+    cameraState.observerMode = false;
+    syncPanoramaButton();
     selectedSiteId = site.id;
     selectedSite = site;
     previewNotesSite = null;
@@ -3029,8 +3085,10 @@
       if (selectedSiteId === site.id) {
         setStageLoadingProgress(1);
         setStageDemReady(true);
+        syncPanoramaButton();
         updateNotesPanel();
-        updateLegendPanel();
+        await enableRelationalMonumentsForCurrentView();
+        setSidebarHidden(true);
       }
     } catch (e) {
       setStageLoadingText(`Failed to load DEM: ${e?.message || String(e)}`);
@@ -3038,7 +3096,89 @@
     }
   }
 
+  async function goToObserverLocation(lat, lng) {
+    const cleanLat = Number(lat);
+    const cleanLng = Number(lng);
+    if (!Number.isFinite(cleanLat) || !Number.isFinite(cleanLng) || cleanLat < -90 || cleanLat > 90 || cleanLng < -180 || cleanLng > 180) {
+      if (els.observerStatus) els.observerStatus.textContent = 'Enter a valid latitude and longitude.';
+      return;
+    }
+
+    const locationSite = {
+      id: `location-${cleanLat.toFixed(6)}-${cleanLng.toFixed(6)}`,
+      smr: 'Location',
+      townland: 'View Location',
+      county: '',
+      lat: cleanLat,
+      lng: cleanLng,
+      props: {
+        MONUMENT_CLASS: 'View Location',
+        TOWNLAND: 'View Location',
+        LATITUDE: cleanLat,
+        LONGITUDE: cleanLng,
+        WEB_NOTES: 'Standard camera view for specified latitude and longitude.'
+      }
+    };
+
+    cameraState.observerMode = false;
+    syncPanoramaButton();
+    cameraState.observerHeightOffsetM = OBSERVER_HEIGHT_OFFSET_M;
+    selectedSiteId = locationSite.id;
+    selectedSite = locationSite;
+    previewNotesSite = null;
+    currentFocus = { lat: cleanLat, lng: cleanLng };
+    cameraState.pitch = 8;
+    cameraState.bearing = 28;
+    cameraState.distance = 1850;
+
+    setStageDemReady(false);
+    setStageLoadingText('Loading location terrain...');
+    resetStageLoadingProgress({ start: 0 });
+    setStageLoadingProgress(0.02, { indeterminate: false, cap: 0.18 });
+    if (els.title) els.title.textContent = '';
+    if (els.typeLine) els.typeLine.textContent = '';
+    if (els.subtitle) els.subtitle.textContent = '';
+    if (els.observerStatus) els.observerStatus.textContent = 'Loading standard camera view for location...';
+    updateNotesPanel();
+    updateFocusTarget();
+    updateCamera();
+
+    try {
+      await buildTerrain(currentFocus);
+      if (selectedSiteId === locationSite.id) {
+        setStageLoadingProgress(1);
+        setStageDemReady(true);
+        syncPanoramaButton();
+        updateNotesPanel();
+        await enableRelationalMonumentsForCurrentView();
+        setSidebarHidden(true);
+        if (els.observerStatus) els.observerStatus.textContent = `Viewing ${cleanLat.toFixed(6)}, ${cleanLng.toFixed(6)} with standard camera and relational monuments.`;
+      }
+    } catch (e) {
+      setStageLoadingText(`Failed to load location DEM: ${e?.message || String(e)}`);
+      setStageLoadingProgress(0.02, { indeterminate: true });
+      if (els.observerStatus) els.observerStatus.textContent = `Failed: ${e?.message || String(e)}`;
+    }
+  }
+
   function updateCamera() {
+    const observer = observerCameraLocal();
+    if (observer) {
+      const pitchRad = THREE.MathUtils.degToRad(cameraState.pitch);
+      const bearingRad = THREE.MathUtils.degToRad(cameraState.bearing);
+      const lookDistance = 120;
+      camera.position.set(observer.x, observer.y, observer.z);
+      camera.lookAt(
+        observer.x - Math.sin(bearingRad) * Math.cos(pitchRad) * lookDistance,
+        observer.y + Math.sin(pitchRad) * lookDistance,
+        observer.z + Math.cos(bearingRad) * Math.cos(pitchRad) * lookDistance
+      );
+      els.zoom.textContent = 'observer';
+      els.pitch.textContent = Math.round(cameraState.pitch);
+      els.bearing.textContent = ((Math.round(cameraState.bearing) % 360) + 360) % 360;
+      updateObserverStatus();
+      return;
+    }
     const pitchRad = THREE.MathUtils.degToRad(cameraState.pitch);
     const bearingRad = THREE.MathUtils.degToRad(cameraState.bearing);
     const horizontal = Math.cos(pitchRad) * cameraState.distance;
@@ -3086,9 +3226,22 @@
     if (!shell) return;
     shell.classList.toggle('sidebar-hidden', !!hidden);
     if (toggleSidebarBtn) toggleSidebarBtn.setAttribute('aria-pressed', hidden ? 'false' : 'true');
+    if (sidebarPeekBtn) sidebarPeekBtn.setAttribute('aria-hidden', hidden ? 'false' : 'true');
     // Resize after the transition so the renderer/camera match the new viewport.
     window.setTimeout(resize, 260);
     resize();
+  }
+
+  let sidebarPeekTimer = 0;
+
+  function scheduleSidebarOpen(delayMs = 420) {
+    clearTimeout(sidebarPeekTimer);
+    sidebarPeekTimer = window.setTimeout(() => setSidebarHidden(false), delayMs);
+  }
+
+  function cancelScheduledSidebarOpen() {
+    clearTimeout(sidebarPeekTimer);
+    sidebarPeekTimer = 0;
   }
 
   function setControlsHidden(hidden) {
@@ -3099,6 +3252,46 @@
     // Controls affect available viewport; keep renderer in sync.
     window.setTimeout(resize, 60);
     resize();
+  }
+
+  function syncPanoramaButton() {
+    if (!panoramaViewBtn) return;
+    panoramaViewBtn.classList.toggle('active', !!cameraState.observerMode);
+    panoramaViewBtn.setAttribute('aria-pressed', cameraState.observerMode ? 'true' : 'false');
+    panoramaViewBtn.setAttribute('data-tip', cameraState.observerMode ? 'Exit panorama view' : 'Panorama first-person view');
+    panoramaViewBtn.setAttribute('aria-label', cameraState.observerMode ? 'Exit panorama view' : 'Panorama first-person view');
+  }
+
+  async function setPanoramaMode(enabled) {
+    if (enabled) {
+      const focus = selectedSite
+        ? { lat: Number(selectedSite.lat), lng: Number(selectedSite.lng) }
+        : currentFocus
+          ? { lat: Number(currentFocus.lat), lng: Number(currentFocus.lng) }
+          : null;
+      if (!focus || !Number.isFinite(focus.lat) || !Number.isFinite(focus.lng)) {
+        if (els.observerStatus) els.observerStatus.textContent = 'Load a site or enter a lat/lon before enabling panorama.';
+        return;
+      }
+      currentFocus = focus;
+      cameraState.observerMode = true;
+      cameraState.observerHeightOffsetM = OBSERVER_HEIGHT_OFFSET_M;
+      cameraState.pitch = 0;
+      if (els.observerLat) els.observerLat.value = String(focus.lat);
+      if (els.observerLon) els.observerLon.value = String(focus.lng);
+      syncPanoramaButton();
+      if (!currentPatch) await buildTerrain(currentFocus);
+      updateFocusTarget();
+      updateCamera();
+      updateObserverStatus();
+      return;
+    }
+
+    cameraState.observerMode = false;
+    cameraState.pitch = Math.max(8, cameraState.pitch);
+    syncPanoramaButton();
+    updateFocusTarget();
+    updateCamera();
   }
 
   function isFullscreen() {
@@ -3183,6 +3376,7 @@
     if (orbitRaf) cancelAnimationFrame(orbitRaf);
 
     currentFocus = { lat: selectedSite.lat, lng: selectedSite.lng };
+    if (cameraState.observerMode) cameraState.pitch = 0;
     updateFocusTarget();
 
     const startBearing = cameraState.bearing;
@@ -3568,6 +3762,20 @@
       setSidebarHidden(!hidden);
     });
   }
+  if (sidebarPeekBtn) {
+    const openSidebarSlowly = (e) => {
+      e.stopPropagation();
+      scheduleSidebarOpen(e.pointerType === 'touch' ? 260 : 520);
+    };
+    sidebarPeekBtn.addEventListener('mouseenter', openSidebarSlowly);
+    sidebarPeekBtn.addEventListener('mouseleave', cancelScheduledSidebarOpen);
+    sidebarPeekBtn.addEventListener('pointerdown', openSidebarSlowly);
+    sidebarPeekBtn.addEventListener('pointerup', cancelScheduledSidebarOpen);
+    sidebarPeekBtn.addEventListener('pointercancel', cancelScheduledSidebarOpen);
+    sidebarPeekBtn.addEventListener('focus', () => scheduleSidebarOpen(420));
+    sidebarPeekBtn.addEventListener('blur', cancelScheduledSidebarOpen);
+    sidebarPeekBtn.setAttribute('aria-hidden', 'true');
+  }
   if (hideControlsBtn) {
     hideControlsBtn.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -3584,6 +3792,13 @@
     document.addEventListener('fullscreenchange', syncFullscreenButton);
     document.addEventListener('webkitfullscreenchange', syncFullscreenButton);
     syncFullscreenButton();
+  }
+  if (panoramaViewBtn) {
+    panoramaViewBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      await setPanoramaMode(!cameraState.observerMode);
+    });
+    syncPanoramaButton();
   }
   if (helpViewBtn) {
     helpViewBtn.addEventListener('click', (e) => {
@@ -3865,10 +4080,16 @@
     verticalExaggeration = Number(els.heightSlider.value) || 0;
     if (els.heightValue) els.heightValue.textContent = `${verticalExaggeration.toFixed(1)}x`;
     rebuildTerrainHeights();
+    if (cameraState.observerMode) updateCamera();
+  });
+
+  els.observerForm?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    await goToObserverLocation(Number(els.observerLat?.value), Number(els.observerLon?.value));
   });
 
   document.getElementById('reset-view').addEventListener('click', () => {
-    cameraState.pitch = 8;
+    cameraState.pitch = cameraState.observerMode ? 0 : 8;
     cameraState.bearing = 28;
     cameraState.distance = 1850;
     if (selectedSite) {
@@ -3949,7 +4170,7 @@
     const dx = e.clientX - stageGesture.last.x;
     const dy = e.clientY - stageGesture.last.y;
     cameraState.bearing -= dx * 0.22;
-    cameraState.pitch = Math.max(8, Math.min(78, cameraState.pitch + dy * 0.12));
+    cameraState.pitch = Math.max(minimumPitchDeg(), Math.min(78, cameraState.pitch + dy * 0.12));
     stageGesture.last = { x: e.clientX, y: e.clientY };
     updateCamera();
   }, { passive: false });
@@ -4016,9 +4237,10 @@
   animate();
   // Initial state: no site selected; keep stage greyed out with a centered status.
   setStageDemReady(false);
-  setStageLoadingText('Select a site from the sidebar…');
+  setStageLoadingText('Select a site or use View Location…');
   // Init: no location selected by default. Render types; sites panel stays collapsed until selection.
   renderTypeList();
+  setPanelOpen('location', false);
   setPanelOpen('types', true);
   setPanelOpen('sites', false);
   setPanelOpen('saved-views', false);
@@ -4027,12 +4249,18 @@
   setPanelOpen('about', false);
   initPresetsUI();
   renderSavedViewsList();
-  window.setTimeout(restoreViewFromHash, 250);
+  window.setTimeout(() => {
+    if (window.location.hash) restoreViewFromHash();
+  }, 250);
 
   document.addEventListener('click', (e) => {
     const btn = e.target.closest('button[data-panel-action]');
     if (!btn) return;
     const act = btn.getAttribute('data-panel-action');
+    if (act === 'location-toggle') {
+      const body = document.querySelector('[data-panel-body="location"]');
+      setPanelOpen('location', body?.classList.contains('hidden'));
+    }
     if (act === 'types-toggle') {
       const body = document.querySelector('[data-panel-body="types"]');
       setPanelOpen('types', body?.classList.contains('hidden'));

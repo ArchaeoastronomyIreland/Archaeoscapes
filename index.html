@@ -30,16 +30,34 @@
 <body>
   <div class="app-shell">
     <aside class="sidebar">
-      <div class="sidebar-header" aria-hidden="true">
-        <div class="brand">
-          <div class="brand-logo" aria-label="Archaeoscapes">
-            <i class="fa-solid fa-landmark"></i>
-            <span>Archaeoscapes</span>
-          </div>
-        </div>
-      </div>
-
       <div class="sidebar-scroll" aria-label="Sidebar content">
+        <!-- Location entry (collapsed by default) -->
+        <section class="panel panel-collapsible panel-location" data-panel="location">
+        <div class="panel-head">
+          <div class="panel-title" style="margin:0; display:flex; align-items:center; gap:8px;">
+            <i class="ph-bold ph-crosshair"></i>
+            <span>Location</span>
+          </div>
+          <button type="button" class="panel-toggle" data-panel-action="location-toggle" aria-label="Toggle location panel" title="Minimise/Maximise">
+            <i class="ph-bold ph-caret-down"></i>
+          </button>
+        </div>
+        <div class="panel-body hidden" data-panel-body="location">
+          <form id="observer-location-form" class="observer-location-form">
+            <p class="hint location-hint"><strong>View Location</strong> for going to a specific lat/lon.</p>
+            <label for="observer-lat">Latitude</label>
+            <input id="observer-lat" class="coord-input" type="number" step="0.000001" value="53.490266">
+            <label for="observer-lon">Longitude</label>
+            <input id="observer-lon" class="coord-input" type="number" step="0.000001" value="-7.5625666">
+            <button id="observer-go" class="monument-selection-reset" type="submit">
+              <i class="ph-bold ph-map-pin"></i>
+              <span>View Location</span>
+            </button>
+            <div id="observer-status" class="status observer-status">Default location: 53.490266, -7.5625666.</div>
+          </form>
+        </div>
+        </section>
+
         <!-- Megalithic type selection (expanded by default) -->
         <section class="panel panel-collapsible" data-panel="types">
         <div class="panel-head">
@@ -52,6 +70,7 @@
           </button>
         </div>
         <div class="panel-body" data-panel-body="types">
+          <p class="hint browse-by-type">Browse by Type:</p>
           <div id="type-list" class="type-list"></div>
         </div>
         </section>
@@ -318,6 +337,10 @@
 
     </aside>
 
+    <button id="sidebar-peek" class="sidebar-peek" type="button" aria-label="Open sidebar" title="Open sidebar">
+      <i class="ph-bold ph-sidebar-simple"></i>
+    </button>
+
     <main class="tour-stage">
       <div id="stage-loading" class="stage-loading" aria-live="polite" aria-busy="true">
         <button id="loading-help-view" class="loading-help-btn" type="button" aria-label="Help" title="Help">
@@ -346,6 +369,9 @@
           </button>
           <button id="fullscreen-view" class="display-btn" type="button" data-tip="Fullscreen" aria-label="Fullscreen" aria-pressed="false">
             <i class="ph-bold ph-arrows-out"></i>
+          </button>
+          <button id="panorama-view" class="display-btn" type="button" data-tip="Panorama first-person view" aria-label="Panorama first-person view" aria-pressed="false">
+            <i class="ph-bold ph-panorama"></i>
           </button>
           <button id="save-view" class="display-btn" type="button" data-tip="Save View" aria-label="Save View">
             <i class="ph-bold ph-floppy-disk"></i>
@@ -414,27 +440,28 @@
 
             <section class="help-section">
               <h2>Top-Left View Controls</h2>
-              <p>These controls manage the screen layout, saved views, help, and the selected-site orbit. They sit on the view itself so they remain available while working in the landscape.</p>
+              <p>These controls manage the screen layout, saved views, help, panorama mode, and the selected-site orbit. They sit on the view itself so they remain available while working in the landscape.</p>
               <div class="help-control-grid">
-                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-sidebar-simple"></i></span><strong>Show/Hide sidebar</strong><span>Expands or collapses the sidebar to give more room to the landscape.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-sidebar-simple"></i></span><strong>Show/Hide sidebar</strong><span>Expands or collapses the sidebar to give more room to the landscape. After loading a view, the sidebar collapses to a slim left-edge control; hover, touch, or focus that control to reopen it.</span></div>
                 <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-square"></i></span><strong>Hide Controls</strong><span>Reduces the interface for clean screen captures.</span></div>
                 <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-arrows-out"></i></span><strong>Fullscreen</strong><span>Requests browser fullscreen where supported, useful on phones where the address bar consumes view height.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-panorama"></i></span><strong>Panorama</strong><span>Switches the loaded view to first-person mode at the current site or lat/lon, with the camera placed at terrain height plus 2 metres and pitch set close to level.</span></div>
                 <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-floppy-disk"></i></span><strong>Save View</strong><span>Stores the current view, selected site, visible markers, labels, ranges, and UI state.</span></div>
                 <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-link-simple"></i></span><strong>Copy View URL</strong><span>Copies a shareable link for the current view state.</span></div>
                 <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-question"></i></span><strong>Help</strong><span>Opens this help page over the view area.</span></div>
-                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-arrow-clockwise"></i></span><strong>Orbit selected site</strong><span>Runs one smooth 360 degree orbit around the selected site.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-arrow-clockwise"></i></span><strong>Orbit selected site</strong><span>Runs one smooth 360 degree orbit around the selected site. In Panorama mode it spins the first-person camera through 360 degrees from the fixed observer position.</span></div>
               </div>
             </section>
 
             <section class="help-section">
               <h2>Top-Right Display Options</h2>
-              <p>These buttons decide what is shown on top of the terrain. The marker modes are mutually exclusive: selecting one monument mode turns the others off so the view has one clear meaning.</p>
+              <p>These buttons decide what is shown on top of the terrain. The marker modes are mutually exclusive: selecting one monument mode turns the others off so the view has one clear meaning. Newly opened views default to showing all relational monuments.</p>
               <div class="help-control-grid">
                 <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-arrow-counter-clockwise"></i></span><strong>Reset view</strong><span>Returns the camera towards the selected site and default viewing angle.</span></div>
                 <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-note"></i></span><strong>Show Notes</strong><span>Shows notes for the active label. <span class="help-orange">Click a label to make it active</span>; close notes or turn this off to hide the notes pane.</span></div>
                 <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-list-bullets"></i></span><strong>Show Legend</strong><span>Shows the icon legend for the currently visible monument marker categories.</span></div>
                 <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-share-network"></i></span><strong>Relational Monuments of Type</strong><span>Shows nearby monuments of the same selected type, within the configured Type range.</span></div>
-                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-circles-three"></i></span><strong>All Relational Monuments</strong><span>Shows nearby monuments from the enabled relational monument classes, within the configured All relational range.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-circles-three"></i></span><strong>All Relational Monuments</strong><span>Shows nearby monuments from the enabled relational monument classes, within the configured All relational range. This mode is switched on automatically when a site or View Location is loaded.</span></div>
                 <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-dots-nine"></i></span><strong>Show All Monuments</strong><span>Shows all monument markers available in the current query area. It shows markers first, not labels.</span></div>
                 <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-tag"></i></span><strong>Show All Labels</strong><span>Adds labels only for markers that are already visible. If no marker mode is active, this turns off because there is nothing to label.</span></div>
               </div>
@@ -465,7 +492,7 @@
 
             <section class="help-section">
               <h2>Movement Controls</h2>
-              <p>The bottom-right movement controls move the camera through the landscape. Press and hold a control for smooth movement; on touch screens, one-finger drag rotates/pitches, two-finger drag pans, and pinch zooms.</p>
+              <p>The bottom-right movement controls move the camera through the landscape. Press and hold a control for smooth movement; on touch screens, one-finger drag rotates/pitches, two-finger drag pans, and pinch zooms. In Panorama mode the controls move and rotate the first-person observer position rather than an orbit target.</p>
               <div class="help-control-grid">
                 <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-plus"></i></span><strong>Zoom in</strong><span>Moves the camera closer to the terrain and selected focus area.</span></div>
                 <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-minus"></i></span><strong>Zoom out</strong><span>Moves the camera further away to show more surrounding landscape.</span></div>
@@ -473,7 +500,7 @@
                 <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-arrow-down"></i></span><strong>Move back</strong><span>Moves the focus point backwards from the current viewing direction.</span></div>
                 <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-arrow-left"></i></span><strong>Move left</strong><span>Moves the focus point left across the terrain.</span></div>
                 <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-arrow-right"></i></span><strong>Move right</strong><span>Moves the focus point right across the terrain.</span></div>
-                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-trend-down"></i></span><strong>Pitch down</strong><span>Lowers the viewing angle toward the ground.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-trend-down"></i></span><strong>Pitch down</strong><span>Lowers the viewing angle toward the ground. In Panorama mode the lower limit is level, close to 0 degrees.</span></div>
                 <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-trend-up"></i></span><strong>Pitch up</strong><span>Raises the viewing angle for a broader horizon and skyline view.</span></div>
                 <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-arrow-counter-clockwise"></i></span><strong>Rotate left</strong><span>Turns the camera bearing counter-clockwise around the focus area.</span></div>
                 <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-arrow-clockwise"></i></span><strong>Rotate right</strong><span>Turns the camera bearing clockwise around the focus area.</span></div>
@@ -524,8 +551,15 @@
 
             <section class="help-section">
               <h2>Sidebar Usage</h2>
-              <p>The sidebar is used from top to bottom: choose what kind of monument you want to examine, then choose the individual site, then optionally return to a saved view.</p>
+              <p>The sidebar is used from top to bottom: enter a specific location, choose what kind of monument you want to examine, then choose the individual site, or return to a saved view. Once a view loads, the sidebar auto-collapses to keep the landscape clear.</p>
               <div class="help-guide-list">
+                <div class="help-guide-item">
+                  <span class="help-sidebar-icon"><i class="ph-bold ph-crosshair"></i></span>
+                  <div>
+                    <h3>View Location</h3>
+                    <p>Open <strong>Location</strong> and enter latitude and longitude to load a standard camera view at that position. The default entry is retained in the fields but is not loaded automatically. Loading a location also turns on all relational monument markers for the surrounding view.</p>
+                  </div>
+                </div>
                 <div class="help-guide-item">
                   <span class="help-sidebar-icon"><i class="ph-bold ph-list-checks"></i></span>
                   <div>
@@ -537,7 +571,7 @@
                   <span class="help-sidebar-icon"><i class="ph-bold ph-map-pin"></i></span>
                   <div>
                     <h3>2. Select a Site</h3>
-                    <p>Use the <strong>Sites</strong> cards to choose a monument. Each card gives the display name, SMR reference, and county. Selecting a site loads the terrain, places the selected marker, opens the selected label, and prepares the notes/detail tools for that monument.</p>
+                    <p>Use the <strong>Sites</strong> cards to choose a monument. Each card gives the display name, SMR reference, and county. Selecting a site loads the terrain, places the selected marker, opens the selected label, prepares the notes/detail tools, turns on all relational monuments, and collapses the sidebar.</p>
                   </div>
                 </div>
                 <div class="help-guide-item">
@@ -558,7 +592,7 @@
                   <span class="help-sidebar-icon"><i class="ph-bold ph-caret-down"></i></span>
                   <div>
                     <h3>Panel toggles</h3>
-                    <p>Use the caret or plus/minus button on a sidebar panel header to expand or collapse that panel. This keeps the sidebar manageable when long monument or site lists are loaded.</p>
+                    <p>Use the caret or plus/minus button on a sidebar panel header to expand or collapse that panel. When the sidebar itself is collapsed, a slim left-edge control remains; hover, touch, or focus it to reopen the sidebar smoothly.</p>
                   </div>
                 </div>
               </div>
@@ -600,7 +634,7 @@
                   <span class="help-sidebar-icon"><i class="ph-bold ph-share-network"></i></span>
                   <div>
                     <h3>Display Options</h3>
-                    <p>Use <strong>Display Visibility</strong> to change overlay opacity. Turn on notes, legend, related markers, all relational markers, all monuments, or all labels as needed. The <strong>Type range</strong> and <strong>All relational range</strong> sliders set the query radius from 0 to 20 km.</p>
+                    <p>Use <strong>Display Visibility</strong> to change overlay opacity. Turn on notes, legend, related markers, all relational markers, all monuments, or all labels as needed. The <strong>Type range</strong> and <strong>All relational range</strong> sliders set the query radius from 0 to 20 km. All relational markers are enabled by default whenever a new site or location view is opened.</p>
                   </div>
                 </div>
                 <div class="help-guide-item">
@@ -705,6 +739,11 @@
       <svg id="label-lines" class="label-lines" aria-hidden="true"></svg>
       <div id="label-layer" class="label-layer" aria-hidden="true"></div>
       <div id="marker-layer" class="marker-layer" aria-hidden="true"></div>
+
+      <div class="stage-brandmark" aria-label="Archaeoscapes">
+        <i class="fa-solid fa-landmark"></i>
+        <span>Archaeoscapes</span>
+      </div>
 
       <div class="controls">
         <button data-action="zoom-in" data-tip="Zoom in" aria-label="Zoom in"><i class="ph-bold ph-plus"></i></button>
