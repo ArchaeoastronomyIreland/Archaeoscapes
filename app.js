@@ -66,13 +66,34 @@
   const AERIAL_Z = 16;
   const TERRAIN_TILE_COUNT = 7;
   const TERRAIN_TILE_COUNT_DOUBLE = 14;
-  const HORIZON_Z = 13;
-  const HORIZON_AERIAL_Z = 14;
-  const HORIZON_TILE_RADIUS = 3; // wider, lower-resolution terrain skirt
+  // Phase 1 terrain: centre Z15 + one outer ring Z13 (~25 km). Z12 ~50 km deferred to Phase 4.
+  // Aerial coverage is independent of DEM merge boundaries — UVs map geography to each canvas.
+  const HORIZON_MID_Z = 13;
+  const HORIZON_MID_TILE_RADIUS = 8;
+  const HORIZON_MID_AERIAL_Z = 13;
+  const HORIZON_MID_EXTENT_M = 25000;
+  const TERRAIN_OUTER_Z = HORIZON_MID_Z;
+  const TERRAIN_OUTER_TILE_RADIUS = HORIZON_MID_TILE_RADIUS;
+  const TERRAIN_OUTER_AERIAL_Z = HORIZON_MID_AERIAL_Z;
+  const TERRAIN_OUTER_EXTENT_M = HORIZON_MID_EXTENT_M;
+  // Reserved for Phase 4 — not loaded in Phase 1.
+  const HORIZON_OUTER_Z = 12;
+  const HORIZON_OUTER_TILE_RADIUS = 8;
+  const HORIZON_OUTER_AERIAL_Z = 12;
+  const HORIZON_OUTER_EXTENT_M = 50000;
+  const HORIZON_STITCH_WIDTH_M = 50;
+  const HORIZON_AERIAL_OVERLAP_M = 1000;
+  const CAMERA_FAR_M = 70000;
   const GRID = 180;
   const DEFAULT_OBSERVER_LAT = 53.490266;
   const DEFAULT_OBSERVER_LNG = -7.5625666;
   const OBSERVER_HEIGHT_OFFSET_M = 2;
+  const VIEWSHED_SCAN_RADIUS_KM = 120;
+  const HORIZON_RELATIONAL_ROI_MAX = 12000;
+  const HORIZON_RELATIONAL_NI_MAX = 25000;
+  const VIEWSHED_DRAW_RADIUS_M = 25000;
+  const VIEWSHED_SETTINGS_VERSION = 7;
+  const HORIZON_WORKER_URL = './horizon-worker.js?v=20260602-viewshed-horizon';
 
   let sites = [];
   let activeType = null; // monumentClass (string)
@@ -87,19 +108,18 @@
   let imageryKey = 'esri-clarity';
   let demAreaKey = 'standard';
   let terrainMesh = null;
-  let horizonMesh = null;
+  let terrainOuterRing = null;
   let aerialTexture = null;
+  let aerialTextureOuter = null;
   let baseElev = null;
   let baseElevSize = 0;
   let baseCenterElev = 0;
-  let horizonElev = null;
-  let horizonElevSize = 0;
-  let horizonCenterElev = 0;
   let horizonPatchMeters = 0;
-  let horizonPatchOriginX = null;
-  let horizonPatchOriginY = null;
-  let horizonPatchCount = null;
   let verticalExaggeration = 1.0;
+
+  function effectiveVerticalExaggeration() {
+    return cameraState.observerMode ? 1 : verticalExaggeration;
+  }
   let markerGroup = null;
   let siteMarker = null;
   let labelItems = [];
@@ -112,9 +132,49 @@
   let showRelatedMonuments = false;
   let showAllRelational = false;
   let showAllMonuments = false;
+  let showHorizonRelational = false;
   let relatedMarkers = [];
   let relationalMarkers = [];
   let allMonumentMarkers = [];
+  let horizonClusterMarkers = [];
+  let horizonMemberMarkers = [];
+  let horizonClusters = [];
+  let horizonExpandedClusters = new Set();
+  let horizonLoadToken = 0;
+  let horizonRelationalLoading = false;
+  let horizonFloatM = 500;
+  let horizonAzClusterDeg = 0.4;
+  let viewshedHorizonWaiters = [];
+  let viewshedHorizonToken = 0;
+  let viewshedHorizonComputing = false;
+  let viewshedHorizonData = null;
+  let horizonDrawProfile = null;
+  let viewshedHorizonObserver = null;
+  let viewshedObserverH = null;
+  let horizonFillMesh = null;
+  let horizonLineMesh = null;
+  let viewshedHorizonLookupTexture = null;
+  let viewshedHorizonComputedResKey = null;
+  let viewshedHorizonScanRadiusKm = null;
+  let viewshedHorizonSettingsVersion = null;
+  let fpvHorizonScreenMaskTexture = null;
+  let fpvHorizonScreenMaskBuffer = null;
+  let fpvHorizonScreenMaskSize = { w: 0, h: 0 };
+  let fpvHorizonScreenMaskFallback = null;
+  const _fpvHorizonProjVec = new THREE.Vector3();
+  // Viewshed horizon is authoritative: do not bias the projected ring upward.
+  const FPV_HORIZON_LINE_Y_OFFSET = 0;
+  let horizonWorker = null;
+  let horizonResKey = 'quick';
+  let viewshedRescheduleTimer = null;
+
+  function normalizeHorizonResKey(key) {
+    const k = String(key || 'quick');
+    if (k === 'max') return 'super';
+    return (k === 'hires' || k === 'super') ? k : 'quick';
+  }
+  let panoramaObserverFocus = null;
+  const FPV_LOCKED_MOVE_ACTIONS = new Set(['move-forward', 'move-back', 'move-left', 'move-right']);
   let showAllLabels = false;
   let relatedRangeM = 0;
   let allRelationalRangeM = 0;
@@ -128,20 +188,55 @@
   let previewNotesSite = null;
   let notesActionItem = null;
   let notesDetailsOpen = false;
+  let datetimePanelOpen = false;
+  let datetimePanelBgOn = true;
+  let customLabels = [];
+  let customLabelMarkers = [];
+  let customLabelPanelOpen = false;
+  let customLabelPickMode = false;
+  let customLabelPanelBgOn = true;
   let activeLabelId = null;
   let allLabelsLoadToken = 0;
   let relatedLoadToken = 0;
   let relationalLoadToken = 0;
   let siteDemReady = false;
+  let externalRenderLock = false;
+  let stageResizeObserver = null;
+  const displaySettings = {
+    brightness: 1.19,
+    gamma: 0.84,
+    hazeStartM: 12500,
+    hazeStrength: 0.19,
+    desaturateStrength: 0.19,
+    fadeDistanceM: 46000
+  };
+  const terrainPaintSettings = {
+    heightStrength: 0.08,
+    relativeHeightStrength: 0.49,
+    heightContrast: 2.15,
+    hillshadeStrength: 0.47,
+    distanceStrength: 0.65,
+    distanceDesaturate: 0.90,
+    distanceStartM: 5500,
+    distanceEndM: 9000,
+    distanceBands: false
+  };
+  let astronomyOverlay = null;
 
   const cameraState = {
     pitch: 8,
     bearing: 28,
     distance: 1850,
+    fov: 45,
     target: new THREE.Vector3(0, 80, 0),
     observerMode: false,
     observerHeightOffsetM: OBSERVER_HEIGHT_OFFSET_M
   };
+
+  const ORBIT_CAMERA_FOV = 45;
+  const OBSERVER_FOV_DEFAULT = 45;
+  const OBSERVER_FOV_MIN = 2;
+  const OBSERVER_FOV_MAX = 75;
 
   const els = {
     stage: document.querySelector('.tour-stage'),
@@ -162,11 +257,104 @@
     zoom: document.getElementById('zoom-readout'),
     pitch: document.getElementById('pitch-readout'),
     bearing: document.getElementById('bearing-readout'),
+    sunReadoutWrap: document.getElementById('sun-readout-wrap'),
+    sunAltReadout: document.getElementById('sun-alt-readout'),
+    sunAziReadout: document.getElementById('sun-azi-readout'),
+    moonReadoutWrap: document.getElementById('moon-readout-wrap'),
+    moonAltReadout: document.getElementById('moon-alt-readout'),
+    moonAziReadout: document.getElementById('moon-azi-readout'),
+    stageViewCaption: document.getElementById('stage-view-caption'),
     nmsStatus: document.getElementById('nms-status'),
     presetStatus: document.getElementById('preset-status'),
     presetList: document.getElementById('preset-list'),
     heightSlider: document.getElementById('height-exaggeration'),
     heightValue: document.getElementById('height-exaggeration-value'),
+    astroEngine: document.getElementById('astro-engine'),
+    astroSwissAtmosphere: document.getElementById('astro-swiss-atmosphere'),
+    astroAtmosphereAuto: document.getElementById('astro-atmosphere-auto'),
+    astroSeaLevelPressure: document.getElementById('astro-sea-level-pressure'),
+    astroSeaLevelHeight: document.getElementById('astro-sea-level-height'),
+    astroTemperature: document.getElementById('astro-temperature'),
+    astroYear: document.getElementById('astro-year'),
+    astroMonth: document.getElementById('astro-month'),
+    astroDay: document.getElementById('astro-day'),
+    astroTime: document.getElementById('astro-time'),
+    astroTimeLabel: document.getElementById('astro-time-label'),
+    astroUseSummertime: document.getElementById('astro-use-summertime'),
+    astroBodyScale: document.getElementById('astro-body-scale'),
+    astroBodyScaleValue: document.getElementById('astro-body-scale-value'),
+    astroShowSun: document.getElementById('astro-show-sun'),
+    astroShowMoon: document.getElementById('astro-show-moon'),
+    astroShowPaths: document.getElementById('astro-show-paths'),
+    astroShowArchaeolines: document.getElementById('astro-show-archaeolines'),
+    astroShowHorizonCompass: document.getElementById('astro-show-horizon-compass'),
+    astroArchEquinox: document.getElementById('astro-arch-equinox'),
+    astroArchSolstice: document.getElementById('astro-arch-solstice'),
+    astroArchCrossquarter: document.getElementById('astro-arch-crossquarter'),
+    astroArchMajorLunar: document.getElementById('astro-arch-major-lunar'),
+    astroArchMinorLunar: document.getElementById('astro-arch-minor-lunar'),
+    astroStatus: document.getElementById('astro-status'),
+    datetimeInline: document.getElementById('datetime-inline'),
+    dtYear: document.getElementById('dt-year'),
+    dtMonth: document.getElementById('dt-month'),
+    dtDay: document.getElementById('dt-day'),
+    dtHour: document.getElementById('dt-hour'),
+    dtHourLabel: document.getElementById('dt-hour-label'),
+    dtMinute: document.getElementById('dt-minute'),
+    dtSecond: document.getElementById('dt-second'),
+    dtUseSummertime: document.getElementById('dt-use-summertime'),
+    dtTimeTransport: document.getElementById('dt-time-transport'),
+    dtCalendarLabel: document.getElementById('dt-calendar-label'),
+    datetimeBgToggle: document.getElementById('datetime-bg-toggle'),
+    datetimeClose: document.getElementById('datetime-close'),
+    toggleDatetimePanel: document.getElementById('toggle-datetime-panel'),
+    customLabelInline: document.getElementById('custom-label-inline'),
+    customLabelForm: document.getElementById('custom-label-form'),
+    customLabelHeading: document.getElementById('custom-label-heading'),
+    customLabelSubtext: document.getElementById('custom-label-subtext'),
+    customLabelAlt: document.getElementById('custom-label-alt'),
+    customLabelAzi: document.getElementById('custom-label-azi'),
+    customLabelPick: document.getElementById('custom-label-pick'),
+    customLabelAdd: document.getElementById('custom-label-add'),
+    customLabelRemove: document.getElementById('custom-label-remove'),
+    customLabelBgToggle: document.getElementById('custom-label-bg-toggle'),
+    customLabelClose: document.getElementById('custom-label-close'),
+    customLabelPickOverlay: document.getElementById('custom-label-pick-overlay'),
+    toggleCustomLabel: document.getElementById('toggle-custom-label'),
+    simulationInline: document.getElementById('simulation-inline'),
+    simulationScroll: document.getElementById('simulation-scroll'),
+    simulationBgToggle: document.getElementById('simulation-bg-toggle'),
+    simulationClose: document.getElementById('simulation-close'),
+    toggleSurface: document.getElementById('toggle-surface'),
+    paintHeightStrength: document.getElementById('paint-height-strength'),
+    paintHeightStrengthValue: document.getElementById('paint-height-strength-value'),
+    paintRelativeHeight: document.getElementById('paint-relative-height'),
+    paintRelativeHeightValue: document.getElementById('paint-relative-height-value'),
+    paintHeightContrast: document.getElementById('paint-height-contrast'),
+    paintHeightContrastValue: document.getElementById('paint-height-contrast-value'),
+    paintHillshade: document.getElementById('paint-hillshade'),
+    paintHillshadeValue: document.getElementById('paint-hillshade-value'),
+    paintDistanceStrength: document.getElementById('paint-distance-strength'),
+    paintDistanceStrengthValue: document.getElementById('paint-distance-strength-value'),
+    paintDistanceDesaturate: document.getElementById('paint-distance-desaturate'),
+    paintDistanceDesaturateValue: document.getElementById('paint-distance-desaturate-value'),
+    paintDistanceStart: document.getElementById('paint-distance-start'),
+    paintDistanceStartValue: document.getElementById('paint-distance-start-value'),
+    paintDistanceEnd: document.getElementById('paint-distance-end'),
+    paintDistanceEndValue: document.getElementById('paint-distance-end-value'),
+    paintDistanceBands: document.getElementById('paint-distance-bands'),
+    displayBrightness: document.getElementById('display-brightness'),
+    displayBrightnessValue: document.getElementById('display-brightness-value'),
+    displayGamma: document.getElementById('display-gamma'),
+    displayGammaValue: document.getElementById('display-gamma-value'),
+    displayHazeStart: document.getElementById('display-haze-start'),
+    displayHazeStartValue: document.getElementById('display-haze-start-value'),
+    displayHazeStrength: document.getElementById('display-haze-strength'),
+    displayHazeStrengthValue: document.getElementById('display-haze-strength-value'),
+    displayDesaturate: document.getElementById('display-desaturate'),
+    displayDesaturateValue: document.getElementById('display-desaturate-value'),
+    displayFadeDistance: document.getElementById('display-fade-distance'),
+    displayFadeDistanceValue: document.getElementById('display-fade-distance-value'),
     observerForm: document.getElementById('observer-location-form'),
     observerLat: document.getElementById('observer-lat'),
     observerLon: document.getElementById('observer-lon'),
@@ -179,6 +367,21 @@
     allRelationalRange: document.getElementById('all-relational-range'),
     allRelationalRangeValue: document.getElementById('all-relational-range-value'),
     showAllMonuments: document.getElementById('show-all-monuments'),
+    horizonResKey: document.getElementById('horizon-res-key'),
+    showHorizonRelational: document.getElementById('show-horizon-relational'),
+    horizonFloatM: document.getElementById('horizon-float-m'),
+    horizonAzCluster: document.getElementById('horizon-az-cluster'),
+    exportStellarium: document.getElementById('export-stellarium'),
+    toggleFpv: document.getElementById('toggle-fpv'),
+    toggleAstronomy: document.getElementById('toggle-astronomy'),
+    astronomyToolbar: document.getElementById('astronomy-toolbar'),
+    fpvHorizonHires: document.getElementById('fpv-horizon-hires'),
+    fpvHorizonSuper: document.getElementById('fpv-horizon-super'),
+    fpvHorizonStatusWrap: document.getElementById('fpv-horizon-status-wrap'),
+    horizonCalcPanel: document.getElementById('horizon-calc-panel'),
+    horizonCalcText: document.getElementById('horizon-calc-text'),
+    horizonCalcProgress: document.getElementById('horizon-calc-progress'),
+    horizonCalcProgressFill: document.getElementById('horizon-calc-progress-fill'),
     showAllLabels: document.getElementById('show-all-labels'),
     sortByCounty: document.getElementById('sort-by-county'),
     showNotes: document.getElementById('show-notes'),
@@ -218,19 +421,29 @@
   const toggleSidebarBtn = document.getElementById('toggle-sidebar');
   const sidebarPeekBtn = document.getElementById('sidebar-peek');
   const hideControlsBtn = document.getElementById('hide-controls');
+  const toggleInfoBtn = document.getElementById('toggle-info');
+  let stageInfoVisible = false;
   const fullscreenViewBtn = document.getElementById('fullscreen-view');
-  const panoramaViewBtn = document.getElementById('panorama-view');
   const saveViewBtn = document.getElementById('save-view');
   const copyViewBtn = document.getElementById('copy-view');
+  const exportViewsBtn = document.getElementById('export-views');
+  const importViewsBtn = document.getElementById('import-views');
   const captureViewBtn = document.getElementById('capture-view');
   const helpViewBtn = document.getElementById('help-view');
   const loadingHelpViewBtn = document.getElementById('loading-help-view');
+  const loadingImportViewBtn = document.getElementById('loading-import-view');
   const helpOverlay = document.getElementById('help-overlay');
   const helpCloseBtn = document.getElementById('help-close');
   const orbitSiteBtn = document.getElementById('orbit-site');
+  const tourStageEl = document.querySelector('.tour-stage');
 
   let orbitRaf = 0;
   let orbitToken = 0;
+  let astronomyToolbarOpen = false;
+  let cameraAnimRaf = 0;
+  let cameraAnimToken = 0;
+  let viewRestoreToken = 0;
+  let suppressHorizonRelationalAutoLoad = false;
 
   async function ensureMegIconLoaded() {
     if (!window.MegIcon) return false;
@@ -389,12 +602,16 @@
     if (els.stageLoading) {
       els.stageLoading.setAttribute('aria-busy', siteDemReady ? 'false' : 'true');
     }
-    if (!els.stageLoading) return;
-
     if (!siteDemReady) {
+      updateStageViewCaption();
+      if (!els.stageLoading) return;
       els.stageLoading.classList.remove('hidden');
       return;
     }
+
+    updateStageViewCaption();
+
+    if (!els.stageLoading) return;
 
     // Show 100% briefly before hiding, so it is visible.
     setStageLoadingProgress(1, { indeterminate: false, cap: 1 });
@@ -403,10 +620,70 @@
     }, 260);
   }
 
+  function isViewLocationSite(site) {
+    if (!site) return true;
+    const id = String(site.id || '');
+    const townland = String(site.townland || '').trim();
+    const mClass = String(site.props?.MONUMENT_CLASS || '').trim();
+    return id.startsWith('location-') || townland === 'View Location' || mClass === 'View Location';
+  }
+
+  function syncStageInfoButton() {
+    toggleInfoBtn?.classList.toggle('active', stageInfoVisible);
+    toggleInfoBtn?.setAttribute('aria-pressed', stageInfoVisible ? 'true' : 'false');
+    toggleInfoBtn?.setAttribute('data-tip', stageInfoVisible ? 'Hide site information' : 'Show site information');
+    toggleInfoBtn?.setAttribute('aria-label', stageInfoVisible ? 'Hide site information' : 'Show site information');
+  }
+
+  function updateStageViewCaption() {
+    if (!els.stageViewCaption) return;
+    if (!siteDemReady || !currentFocus || !isFinite(currentFocus.lat) || !isFinite(currentFocus.lng)) {
+      els.stageViewCaption.classList.add('hidden');
+      els.stageViewCaption.replaceChildren();
+      return;
+    }
+    if (!stageInfoVisible) {
+      els.stageViewCaption.classList.add('hidden');
+      return;
+    }
+    const lat = Number(currentFocus.lat);
+    const lng = Number(currentFocus.lng);
+    const coord = (v) => (Number.isFinite(v) ? v.toFixed(6) : '—');
+    const lines = [];
+    if (isViewLocationSite(selectedSite)) {
+      lines.push('Current Location');
+      lines.push(`Lat: ${coord(lat)} · Lon: ${coord(lng)}`);
+    } else {
+      const props = selectedSite?.props || {};
+      const townland = titleCaseWords(shortName(selectedSite?.townland || props.TOWNLAND || props.TOWNLAND_NAME || '')) || '—';
+      const mClass = String(props.MONUMENT_CLASS || '').trim() || '—';
+      const smr = String(selectedSite?.smr || props.SMRS || props.SMR_NO || props.SMR || props.OBJECTID || '').trim() || '—';
+      const county = titleCaseWords(selectedSite?.county || props.COUNTY || '') || '—';
+      lines.push(`Townland: ${townland} · Type: ${mClass}`);
+      lines.push(`SMR: ${smr} · County: ${county}`);
+      lines.push(`Lat: ${coord(lat)} · Lon: ${coord(lng)}`);
+    }
+    els.stageViewCaption.replaceChildren();
+    for (const text of lines) {
+      const span = document.createElement('span');
+      span.className = 'stage-view-caption-line';
+      span.textContent = text;
+      els.stageViewCaption.appendChild(span);
+    }
+    els.stageViewCaption.classList.remove('hidden');
+  }
+
+  toggleInfoBtn?.addEventListener('click', () => {
+    stageInfoVisible = !stageInfoVisible;
+    syncStageInfoButton();
+    updateStageViewCaption();
+  });
+  syncStageInfoButton();
+
   function removeNonSelectedLabels() {
     const keep = [];
     for (const item of labelItems) {
-      if (item.kind === 'selected') {
+      if (item.kind === 'selected' || item.kind === 'custom') {
         keep.push(item);
         continue;
       }
@@ -432,6 +709,7 @@
       if (!item?.el) continue;
       item.el.classList.toggle('active', !!(id && item.id === id));
     }
+    updateCustomLabelPanel();
   }
 
   function rebuildAllLabelsFromShownMarkers() {
@@ -508,10 +786,571 @@
   }
   if (els.notesClose && els.showNotes) {
     els.notesClose.addEventListener('click', () => {
-      els.showNotes.checked = false;
-      updateNotesPanel();
+      activateStagePanel(null);
     });
   }
+
+  function layoutStagePanels() {
+    const stackTop = 16;
+    const toolbarH = 42;
+    const stackGap = 8;
+    const panelGap = 10;
+    let top = stackTop + toolbarH + panelGap;
+    const astroVisible = astronomyToolbarOpen && els.astronomyToolbar && !els.astronomyToolbar.classList.contains('hidden');
+    if (astroVisible) top += toolbarH + stackGap;
+    if (els.notesInline && !els.notesInline.classList.contains('hidden')) {
+      els.notesInline.style.top = `${top}px`;
+    }
+    if (datetimePanelOpen && els.datetimeInline) {
+      els.datetimeInline.style.top = `${top}px`;
+    }
+    if (customLabelPanelOpen && els.customLabelInline) {
+      els.customLabelInline.style.top = `${top}px`;
+    }
+    layoutCustomLabelPickOverlay(top);
+  }
+
+  function layoutCustomLabelPickOverlay(panelTop = null) {
+    if (!els.customLabelPickOverlay) return;
+    if (panelTop == null) {
+      const stackTop = 16;
+      const toolbarH = 42;
+      const panelGap = 10;
+      const stackGap = 8;
+      panelTop = stackTop + toolbarH + panelGap;
+      const astroVisible = astronomyToolbarOpen && els.astronomyToolbar && !els.astronomyToolbar.classList.contains('hidden');
+      if (astroVisible) panelTop += toolbarH + stackGap;
+    }
+    els.customLabelPickOverlay.style.top = `${panelTop}px`;
+  }
+
+  function normalizeCustomAzimuth(deg) {
+    const n = Number(deg);
+    if (!isFinite(n)) return NaN;
+    return ((n % 360) + 360) % 360;
+  }
+
+  function customLabelDetailText(azimuth, altitude, subText) {
+    const meta = `Az ${Number(azimuth).toFixed(1)}° · Alt ${Number(altitude).toFixed(2)}°`;
+    const detail = String(subText || '').trim();
+    return detail || meta;
+  }
+
+  function screenPointToAzAlt(clientX, clientY) {
+    if (!cameraState.observerMode || !els.container || !camera) return null;
+    const rect = els.container.getBoundingClientRect();
+    if (!rect.width || !rect.height) return null;
+    const ndcX = ((clientX - rect.left) / rect.width) * 2 - 1;
+    const ndcY = -((clientY - rect.top) / rect.height) * 2 + 1;
+    const raycaster = new THREE.Raycaster();
+    raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), camera);
+    const d = raycaster.ray.direction;
+    const bearingRad = Math.atan2(d.x, -d.z);
+    const altRad = Math.asin(Math.max(-1, Math.min(1, d.y)));
+    return {
+      azimuth: normalizeCustomAzimuth(THREE.MathUtils.radToDeg(bearingRad)),
+      altitude: THREE.MathUtils.radToDeg(altRad)
+    };
+  }
+
+  function fillCustomLabelCoordInputs(azimuth, altitude) {
+    if (els.customLabelAzi && isFinite(azimuth)) els.customLabelAzi.value = Number(azimuth).toFixed(1);
+    if (els.customLabelAlt && isFinite(altitude)) els.customLabelAlt.value = Number(altitude).toFixed(2);
+  }
+
+  function setCustomLabelPickMode(on) {
+    customLabelPickMode = !!on;
+    tourStageEl?.classList.toggle('custom-label-pick-active', customLabelPickMode);
+    els.customLabelPickOverlay?.classList.toggle('hidden', !customLabelPickMode);
+    els.customLabelPickOverlay?.setAttribute('aria-hidden', customLabelPickMode ? 'false' : 'true');
+    els.customLabelPick?.classList.toggle('is-active', customLabelPickMode);
+    els.customLabelPick?.setAttribute('aria-pressed', customLabelPickMode ? 'true' : 'false');
+    if (customLabelPickMode) layoutCustomLabelPickOverlay();
+  }
+
+  function updateCustomLabelPanel() {
+    if (!els.customLabelInline) return;
+    const visible = customLabelPanelOpen && cameraState.observerMode && siteDemReady;
+    els.customLabelInline.classList.toggle('hidden', !visible);
+    els.customLabelInline.classList.toggle('with-bg', visible && customLabelPanelBgOn);
+    els.toggleCustomLabel?.classList.toggle('active', visible);
+    els.toggleCustomLabel?.setAttribute('aria-pressed', visible ? 'true' : 'false');
+    if (!visible) setCustomLabelPickMode(false);
+    const activeCustom = activeLabelId && labelItems.some(x => x.id === activeLabelId && x.kind === 'custom');
+    els.customLabelRemove?.classList.toggle('hidden', !activeCustom);
+    layoutStagePanels();
+  }
+
+  function toggleCustomLabelPanel() {
+    if (!cameraState.observerMode) return;
+    if (customLabelPanelOpen) {
+      activateStagePanel(null);
+      return;
+    }
+    activateStagePanel('customLabel');
+  }
+
+  function removeCustomSkyLabel(id, { silent = false } = {}) {
+    const labelId = String(id || '');
+    if (!labelId) return;
+    customLabelMarkers = customLabelMarkers.filter((m) => {
+      if (m.id === labelId) {
+        m.el?.remove();
+        return false;
+      }
+      return true;
+    });
+    customLabels = customLabels.filter((c) => c.id !== labelId);
+    if (hasLabel(labelId)) removeFlatLabel(labelId);
+    if (!silent && activeLabelId === labelId) {
+      activeLabelId = null;
+      setActiveLabelById(null);
+    }
+    updateCustomLabelPanel();
+  }
+
+  function clearCustomLabels() {
+    for (const m of customLabelMarkers) m.el?.remove();
+    customLabelMarkers = [];
+    customLabels = [];
+    const keep = [];
+    for (const item of labelItems) {
+      if (item.kind === 'custom') {
+        item.el?.remove();
+        item.line?.remove();
+        continue;
+      }
+      keep.push(item);
+    }
+    labelItems = keep;
+    if (activeLabelId && !labelItems.some(x => x.id === activeLabelId)) {
+      activeLabelId = null;
+      setActiveLabelById(null);
+    }
+    updateCustomLabelPanel();
+  }
+
+  function addCustomSkyLabel({ id = null, heading = '', subText = '', azimuth, altitude, distM = null, activate = true } = {}) {
+    if (!cameraState.observerMode || !els.labelLayer || !els.labelLines || !els.markerLayer) return null;
+    const az = normalizeCustomAzimuth(azimuth);
+    const alt = Number(altitude);
+    if (!isFinite(az) || !isFinite(alt)) return null;
+    const labelId = String(id || `custom-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`);
+    const title = String(heading || 'Custom').trim() || 'Custom';
+    const detail = customLabelDetailText(az, alt, subText);
+    const dist = Math.max(80, Number(distM) || viewshedDisplayRadiusM());
+
+    removeCustomSkyLabel(labelId, { silent: true });
+
+    const markerEl = document.createElement('div');
+    markerEl.className = 'rel-marker rel-marker--custom';
+    markerEl.dataset.customId = labelId;
+    markerEl.title = title;
+    markerEl.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      if (customLabelPickMode) return;
+      if (activeLabelId === labelId) {
+        activeLabelId = null;
+        setActiveLabelById(null);
+        updateCustomLabelPanel();
+        return;
+      }
+      setActiveLabelById(labelId);
+      updateCustomLabelPanel();
+    });
+    els.markerLayer.appendChild(markerEl);
+    customLabelMarkers.push({ id: labelId, el: markerEl, azimuth: az, altitude: alt, distM: dist });
+
+    const el = document.createElement('div');
+    el.className = 'site-label site-label--custom';
+    el.innerHTML = `<span class="label-title">${escapeHtml(title)}</span><span class="detail">${escapeHtml(detail)}</span>`;
+    el.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      if (customLabelPickMode) return;
+      if (activeLabelId === labelId) {
+        activeLabelId = null;
+        setActiveLabelById(null);
+        updateCustomLabelPanel();
+        return;
+      }
+      setActiveLabelById(labelId);
+      updateCustomLabelPanel();
+    });
+    els.labelLayer.appendChild(el);
+    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    els.labelLines.appendChild(line);
+    labelItems.push({
+      id: labelId,
+      kind: 'custom',
+      local: null,
+      lat: null,
+      lng: null,
+      props: { CUSTOM_LABEL: true, HEADING: title, SUB_TEXT: detail },
+      el,
+      line,
+      visible: true,
+      horizonAzimuth: az,
+      horizonAltitude: alt,
+      horizonDistM: dist
+    });
+    customLabels.push({ id: labelId, heading: title, subText: String(subText || '').trim(), azimuth: az, altitude: alt, distM: dist });
+    if (activate) setActiveLabelById(labelId);
+    updateCustomLabelPanel();
+    return labelId;
+  }
+
+  function restoreCustomLabels(state) {
+    clearCustomLabels();
+    const list = Array.isArray(state?.customLabels) ? state.customLabels : [];
+    for (const entry of list) {
+      if (!entry || !isFinite(entry.azimuth) || !isFinite(entry.altitude)) continue;
+      addCustomSkyLabel({
+        id: entry.id,
+        heading: entry.heading,
+        subText: entry.subText,
+        azimuth: entry.azimuth,
+        altitude: entry.altitude,
+        distM: entry.distM,
+        activate: false
+      });
+    }
+    const active = list.find(x => x?.active)?.id;
+    if (active && hasLabel(active)) setActiveLabelById(active);
+    updateCustomLabelPanel();
+  }
+
+  function updateCustomMarkers() {
+    if (!customLabelMarkers.length || !els.container) return;
+    for (const marker of customLabelMarkers) {
+      const pt = projectedScreenPointHorizon(marker.azimuth, marker.altitude, marker.distM);
+      if (!pt) {
+        marker.el.style.display = 'none';
+        continue;
+      }
+      marker.el.style.display = 'block';
+      marker.el.style.left = `${pt.x}px`;
+      marker.el.style.top = `${pt.y}px`;
+    }
+  }
+
+  function commitCustomLabelFromForm() {
+    const heading = String(els.customLabelHeading?.value || '').trim();
+    const subText = String(els.customLabelSubtext?.value || '').trim();
+    const azimuth = normalizeCustomAzimuth(els.customLabelAzi?.value);
+    const altitude = Number(els.customLabelAlt?.value);
+    if (!heading) {
+      els.customLabelHeading?.focus();
+      return null;
+    }
+    if (!isFinite(azimuth) || !isFinite(altitude)) return null;
+    const id = addCustomSkyLabel({ heading, subText, azimuth, altitude });
+    if (id) {
+      if (els.customLabelHeading) els.customLabelHeading.value = '';
+      if (els.customLabelSubtext) els.customLabelSubtext.value = '';
+      if (els.customLabelAlt) els.customLabelAlt.value = '';
+      if (els.customLabelAzi) els.customLabelAzi.value = '';
+      setCustomLabelPickMode(false);
+    }
+    return id;
+  }
+
+  function currentViewType() {
+    return cameraState.observerMode ? 'fpv' : 'default';
+  }
+
+  function viewTypeLabel(viewType) {
+    return viewType === 'fpv' ? 'FP view' : 'Orbit';
+  }
+
+  function ensurePanoramaObserverFocusFromState(state) {
+    if (!cameraState.observerMode) {
+      panoramaObserverFocus = null;
+      return;
+    }
+    const site = state?.selectedSite || null;
+    const focus = state?.focus || site || currentFocus;
+    const lat = Number(site?.lat ?? focus?.lat);
+    const lng = Number(site?.lng ?? focus?.lng);
+    if (!isFinite(lat) || !isFinite(lng)) return;
+    panoramaObserverFocus = { lat, lng };
+    currentFocus = { lat, lng };
+    if (els.observerLat) els.observerLat.value = String(lat);
+    if (els.observerLon) els.observerLon.value = String(lng);
+  }
+
+  function syncMonumentModeUiFromFlags() {
+    if (els.showRelatedMonuments) els.showRelatedMonuments.checked = !!showRelatedMonuments;
+    if (els.showAllRelational) els.showAllRelational.checked = !!showAllRelational;
+    if (els.showAllMonuments) els.showAllMonuments.checked = !!showAllMonuments;
+    if (els.showHorizonRelational) els.showHorizonRelational.checked = !!showHorizonRelational;
+    const horizonRelBtn = document.querySelector('button[data-toggle="show-horizon-relational"]');
+    if (horizonRelBtn) {
+      horizonRelBtn.classList.toggle('active', !!showHorizonRelational);
+      horizonRelBtn.setAttribute('aria-pressed', showHorizonRelational ? 'true' : 'false');
+    }
+  }
+
+  function resolveMonumentModeFromViewState(state) {
+    const viewType = normalizeViewType(state);
+    const mode = state?.monumentMode || null;
+    if (viewType === 'fpv') {
+      if (mode === 'horizon' || state?.astroToggles?.showHorizonRelational) return 'horizon';
+      if (mode === 'type' || mode === 'relational' || mode === 'all') return mode;
+      return null;
+    }
+    if (mode === 'horizon') return null;
+    return mode;
+  }
+
+  function setMonumentModeFlags(mode) {
+    showRelatedMonuments = mode === 'type';
+    showAllRelational = mode === 'relational';
+    showAllMonuments = mode === 'all';
+    showHorizonRelational = mode === 'horizon';
+    syncMonumentModeUiFromFlags();
+    updateLegendPanel();
+  }
+
+  function clearAllMonumentMarkerLayers() {
+    relationalLoadToken += 1;
+    horizonLoadToken += 1;
+    clearRelatedMarkers();
+    clearRelationalMarkers();
+    clearAllMonumentMarkers();
+    clearHorizonRelationalMarkers();
+  }
+
+  async function reloadMonumentMarkersForCurrentMode() {
+    if (!currentPatch) return;
+    if (showRelatedMonuments) await addNmsMarkers();
+    else if (showAllRelational) await loadRelationalMarkersInView();
+    else if (showAllMonuments) await loadAllMonumentMarkersInView();
+    else if (showHorizonRelational && cameraState.observerMode) await loadHorizonRelationalMarkers();
+    updateRelationalMarkers();
+    syncShowAllLabelsState();
+    updateLegendPanel();
+  }
+
+  function captureDateTimeState() {
+    if (astronomyOverlay?.getDateTimeSnapshot) {
+      return cloneForStorage(astronomyOverlay.getDateTimeSnapshot());
+    }
+    return {
+      year: els.dtYear ? Number(els.dtYear.value) : null,
+      month: els.dtMonth ? Number(els.dtMonth.value) : null,
+      day: els.dtDay ? Number(els.dtDay.value) : null,
+      utcTotalSeconds: (() => {
+        const h = Number(els.dtHour?.value) || 0;
+        const m = Number(els.dtMinute?.value) || 0;
+        const s = Number(els.dtSecond?.value) || 0;
+        return h * 3600 + m * 60 + s;
+      })(),
+      useSummertime: !!els.dtUseSummertime?.checked
+    };
+  }
+
+  function applyDateTimeState(datetime) {
+    if (!datetime || typeof datetime !== 'object') return;
+    if (astronomyOverlay?.applyDateTimeSnapshot) {
+      astronomyOverlay.applyDateTimeSnapshot(datetime);
+      return;
+    }
+    if (els.dtYear && datetime.year != null) { els.dtYear.value = String(datetime.year); dispatchInputChange(els.dtYear); }
+    if (els.dtMonth && datetime.month != null) { els.dtMonth.value = String(datetime.month); dispatchInputChange(els.dtMonth); }
+    if (els.dtDay && datetime.day != null) { els.dtDay.value = String(datetime.day); dispatchInputChange(els.dtDay); }
+    if (els.dtHour && datetime.hour != null) { els.dtHour.value = String(datetime.hour); dispatchInputChange(els.dtHour); }
+    if (els.dtMinute && datetime.minute != null) { els.dtMinute.value = String(datetime.minute); dispatchInputChange(els.dtMinute); }
+    if (els.dtSecond && datetime.second != null) { els.dtSecond.value = String(datetime.second); dispatchInputChange(els.dtSecond); }
+    if (els.dtUseSummertime && typeof datetime.useSummertime === 'boolean') {
+      els.dtUseSummertime.checked = datetime.useSummertime;
+      dispatchInputChange(els.dtUseSummertime);
+    }
+  }
+
+  function syncFpvToolbar() {
+    const fpv = !!cameraState.observerMode;
+    els.toggleFpv?.classList.toggle('active', fpv);
+    els.toggleFpv?.setAttribute('aria-pressed', fpv ? 'true' : 'false');
+    els.toggleFpv?.setAttribute('data-tip', fpv ? 'Exit FP View' : 'Show FP View');
+    els.toggleFpv?.setAttribute('aria-label', fpv ? 'Exit FP View' : 'Show FP View');
+  }
+
+  function syncAstronomyToolbar() {
+    const fpv = !!cameraState.observerMode;
+    if (!fpv) astronomyToolbarOpen = false;
+    const open = astronomyToolbarOpen && fpv;
+    els.astronomyToolbar?.classList.toggle('hidden', !open);
+    els.astronomyToolbar?.setAttribute('aria-hidden', open ? 'false' : 'true');
+    els.toggleAstronomy?.classList.toggle('panorama-only-disabled', !fpv);
+    els.toggleAstronomy?.classList.toggle('active', open);
+    els.toggleAstronomy?.setAttribute('aria-pressed', open ? 'true' : 'false');
+    els.toggleAstronomy?.setAttribute('aria-disabled', fpv ? 'false' : 'true');
+    els.toggleAstronomy?.setAttribute('data-tip', open ? 'Hide Astronomy Tools' : 'Show Astronomy Tools');
+    els.toggleAstronomy?.setAttribute('aria-label', open ? 'Hide Astronomy Tools' : 'Show Astronomy Tools');
+    syncFpvToolbar();
+    layoutStagePanels();
+  }
+
+  async function toggleFpvMode() {
+    if (cameraState.observerMode) {
+      astronomyToolbarOpen = false;
+      syncAstronomyToolbar();
+      await setPanoramaMode(false);
+      return;
+    }
+    astronomyToolbarOpen = false;
+    await setPanoramaMode(true);
+    syncAstronomyToolbar();
+  }
+
+  async function toggleAstronomyMode() {
+    if (!cameraState.observerMode) return;
+    astronomyToolbarOpen = !astronomyToolbarOpen;
+    syncAstronomyToolbar();
+  }
+
+  function refreshStagePanelToolbar() {
+    const notesBtn = document.querySelector('button[data-toggle="show-notes"]');
+    const notesActive = !!els.showNotes?.checked && !datetimePanelOpen && !customLabelPanelOpen;
+    notesBtn?.classList.toggle('active', notesActive);
+    notesBtn?.setAttribute('aria-pressed', notesActive ? 'true' : 'false');
+    els.toggleDatetimePanel?.classList.toggle('active', datetimePanelOpen);
+    els.toggleDatetimePanel?.setAttribute('aria-pressed', datetimePanelOpen ? 'true' : 'false');
+    els.toggleCustomLabel?.classList.toggle('active', customLabelPanelOpen);
+    els.toggleCustomLabel?.setAttribute('aria-pressed', customLabelPanelOpen ? 'true' : 'false');
+  }
+
+  function refreshSurfaceToolbar() {
+    const terrainOn = imageryKey === 'terrain';
+    const tip = terrainOn ? 'Surface: Terrain relief' : 'Surface: Esri Aerial Clarity';
+    els.toggleSurface?.classList.toggle('active', terrainOn);
+    els.toggleSurface?.setAttribute('aria-pressed', terrainOn ? 'true' : 'false');
+    els.toggleSurface?.setAttribute('data-tip', tip);
+    els.toggleSurface?.setAttribute('aria-label', tip);
+  }
+
+  function syncImageryRadioButtons() {
+    document.querySelectorAll('input[name="imagery-base"]').forEach((input) => {
+      input.checked = input.value === imageryKey;
+    });
+  }
+
+  async function applyImageryKey(key) {
+    imageryKey = key;
+    syncImageryRadioButtons();
+    refreshSurfaceToolbar();
+    if (currentFocus || selectedSite || sites[0]) {
+      await buildTerrain(currentFocus || selectedSite || sites[0]);
+    } else {
+      applyDisplaySettings();
+    }
+  }
+
+  async function toggleSurfaceImagery() {
+    await applyImageryKey(imageryKey === 'terrain' ? 'esri-clarity' : 'terrain');
+  }
+
+  function activateStagePanel(panel) {
+    datetimePanelOpen = panel === 'datetime';
+    customLabelPanelOpen = panel === 'customLabel';
+    if (els.showNotes) els.showNotes.checked = panel === 'notes';
+    if (panel !== 'customLabel') setCustomLabelPickMode(false);
+    updateNotesPanel();
+    updateDatetimePanel();
+    updateCustomLabelPanel();
+    refreshStagePanelToolbar();
+    if (datetimePanelOpen) astronomyOverlay?.syncControls();
+  }
+
+  function toggleStagePanel(panel) {
+    const open = panel === 'notes'
+      ? (!!els.showNotes?.checked && !datetimePanelOpen && !customLabelPanelOpen)
+      : panel === 'datetime'
+        ? datetimePanelOpen
+        : customLabelPanelOpen;
+    activateStagePanel(open ? null : panel);
+  }
+
+  function updateDatetimePanel() {
+    if (!els.datetimeInline) return;
+    els.datetimeInline.classList.toggle('hidden', !datetimePanelOpen);
+    els.datetimeInline.classList.toggle('with-bg', datetimePanelOpen && datetimePanelBgOn);
+    els.toggleDatetimePanel?.classList.toggle('active', datetimePanelOpen);
+    els.toggleDatetimePanel?.setAttribute('aria-pressed', datetimePanelOpen ? 'true' : 'false');
+    if (datetimePanelOpen) {
+      astronomyOverlay?.syncControls();
+    }
+    layoutStagePanels();
+  }
+
+  els.toggleDatetimePanel?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (!cameraState.observerMode) return;
+    toggleStagePanel('datetime');
+  });
+  els.toggleCustomLabel?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (!cameraState.observerMode) return;
+    toggleCustomLabelPanel();
+  });
+  els.customLabelClose?.addEventListener('click', () => {
+    activateStagePanel(null);
+  });
+  els.customLabelBgToggle?.addEventListener('click', () => {
+    customLabelPanelBgOn = !customLabelPanelBgOn;
+    els.customLabelInline?.classList.toggle('with-bg', customLabelPanelOpen && customLabelPanelBgOn);
+  });
+  els.customLabelPick?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (!customLabelPanelOpen) return;
+    setCustomLabelPickMode(!customLabelPickMode);
+  });
+  els.customLabelForm?.addEventListener('submit', (e) => {
+    e.preventDefault();
+    commitCustomLabelFromForm();
+  });
+  els.customLabelRemove?.addEventListener('click', () => {
+    if (!activeLabelId) return;
+    const item = labelItems.find(x => x.id === activeLabelId && x.kind === 'custom');
+    if (!item) return;
+    removeCustomSkyLabel(item.id);
+  });
+  els.customLabelPickOverlay?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const coords = screenPointToAzAlt(e.clientX, e.clientY);
+    if (!coords) return;
+    fillCustomLabelCoordInputs(coords.azimuth, coords.altitude);
+    setCustomLabelPickMode(false);
+    els.customLabelHeading?.focus();
+  });
+  els.customLabelPickOverlay?.addEventListener('pointerdown', (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+  }, { passive: false });
+  els.datetimeClose?.addEventListener('click', () => {
+    activateStagePanel(null);
+  });
+  els.datetimeBgToggle?.addEventListener('click', () => {
+    datetimePanelBgOn = !datetimePanelBgOn;
+    els.datetimeInline?.classList.toggle('with-bg', datetimePanelOpen && datetimePanelBgOn);
+  });
+
+  els.simulationClose?.addEventListener('click', () => {
+    els.simulationInline?.classList.add('hidden');
+  });
+  els.simulationBgToggle?.addEventListener('click', () => {
+    els.simulationInline?.classList.toggle('with-bg');
+  });
+
+  els.astroShowArchaeolines?.addEventListener('change', () => {
+    astronomyOverlay?.updateOverlay();
+  });
+  els.astroShowHorizonCompass?.addEventListener('change', () => {
+    astronomyOverlay?.updateOverlay();
+  });
+
+  window.addEventListener('resize', layoutStagePanels);
 
   function sameMonumentAsSelected(props, lat, lng) {
     const a = normSmr(props?.SMRS || props?.SMR || props?.SMR_NO || '');
@@ -696,18 +1535,25 @@
     });
   }
 
+  const SCENE_SKY_CLEAR = 0xbfe3ff;
+  const FPV_BELOW_HORIZON_CLEAR = 0x667659;
+
   const scene = new THREE.Scene();
   // Keep the near terrain crisp: push atmospheric fade far out.
-  scene.background = new THREE.Color(0xbfe3ff);
+  scene.background = new THREE.Color(SCENE_SKY_CLEAR);
   scene.fog = new THREE.Fog(0xd6efff, 14000, 52000);
 
-  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, preserveDrawingBuffer: true });
+  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-  renderer.setSize(els.container.clientWidth, els.container.clientHeight);
+  renderer.setSize(
+    Math.max(1, els.container.clientWidth),
+    Math.max(1, els.container.clientHeight)
+  );
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   els.container.appendChild(renderer.domElement);
+  bindStageResizeObserver();
 
-  const camera = new THREE.PerspectiveCamera(45, 1, 1, 25000);
+  const camera = new THREE.PerspectiveCamera(45, 1, 1, CAMERA_FAR_M);
   scene.add(new THREE.HemisphereLight(0xffffff, 0x334155, 1.55));
   const sun = new THREE.DirectionalLight(0xffffff, 1.4);
   sun.position.set(-1200, 2400, 900);
@@ -717,6 +1563,23 @@
   addSkyDome();
   markerGroup = new THREE.Group();
   scene.add(markerGroup);
+  astronomyOverlay = window.SkyscapeAstronomy?.create({
+    THREE,
+    scene,
+    camera,
+    els,
+    getCurrentFocus: () => observerFocusCoords() || currentFocus,
+    getObserverCameraLocal: () => observerCameraLocal(),
+    getVerticalExaggeration: () => verticalExaggeration,
+    getBaseCenterElev: () => baseCenterElev,
+    getCameraState: () => cameraState,
+    isPanoramaView: () => !!cameraState.observerMode,
+    getViewshedHorizonSample: (azimuthDeg) => horizonSampleAtAzimuth(horizonDrawProfileData(), azimuthDeg),
+    getCompositeHorizonAltDeg: (azimuthDeg) => horizonAltAtAzimuth(horizonDrawProfileData(), azimuthDeg),
+    getDevicePixelRatio: () => renderer.getPixelRatio(),
+    getMaxAnisotropy: () => renderer.capabilities.getMaxAnisotropy(),
+    onHorizonsUpdated: () => syncAstroReadout()
+  });
 
   function addSkyDome() {
     if (skyDome) {
@@ -734,8 +1597,12 @@
       // Controls where the haze band sits. Higher = haze pulled further down.
       hazeStart: { value: -0.08 },
       hazeEnd: { value: 0.32 },
-      // Controls contrast above haze.
-      exponent: { value: 1.35 }
+      exponent: { value: 1.35 },
+      viewshedMaskEnabled: { value: 0.0 },
+      viewshedHorizonMap: { value: null },
+      fpvHorizonMask: { value: 0.0 },
+      fpvHorizonScreenMask: { value: null },
+      fpvHorizonMaskResolution: { value: new THREE.Vector2(1, 1) }
     };
 
     const mat = new THREE.ShaderMaterial({
@@ -760,6 +1627,11 @@
         uniform float hazeStart;
         uniform float hazeEnd;
         uniform float exponent;
+        uniform float viewshedMaskEnabled;
+        uniform sampler2D viewshedHorizonMap;
+        uniform float fpvHorizonMask;
+        uniform sampler2D fpvHorizonScreenMask;
+        uniform vec2 fpvHorizonMaskResolution;
 
         float hash12(vec2 p) {
           vec3 p3  = fract(vec3(p.xyx) * 0.1031);
@@ -767,9 +1639,28 @@
           return fract((p3.x + p3.y) * p3.z);
         }
 
+        float viewshedHorizonAltDeg(vec3 dir) {
+          float az = degrees(atan(dir.x, -dir.z));
+          if (az < 0.0) az += 360.0;
+          float encoded = texture2D(viewshedHorizonMap, vec2((az + 0.5) / 360.0, 0.5)).r;
+          return encoded * 180.0 - 90.0;
+        }
+
         void main() {
+          vec3 dir = normalize(vWorldDir);
+          if (fpvHorizonMask > 0.5) {
+            vec2 maskUv = vec2(
+              gl_FragCoord.x / fpvHorizonMaskResolution.x,
+              gl_FragCoord.y / fpvHorizonMaskResolution.y
+            );
+            if (texture2D(fpvHorizonScreenMask, maskUv).r < 0.5) discard;
+          } else if (viewshedMaskEnabled > 0.5) {
+            float alt = degrees(asin(clamp(dir.y, -1.0, 1.0)));
+            if (alt < viewshedHorizonAltDeg(dir) - 0.02) discard;
+          }
+
           // y is -1..1. Horizon ~0. We want a strong haze band around horizon.
-          float y = clamp(vWorldDir.y, -1.0, 1.0);
+          float y = clamp(dir.y, -1.0, 1.0);
 
           // Base vertical blend from bottom->top
           float t = pow(clamp((y + 1.0) * 0.5, 0.0, 1.0), exponent);
@@ -801,6 +1692,653 @@
     scene.add(skyDome);
   }
 
+  function horizonAltAtAzimuth(horizonData, azimuthDeg) {
+    if (!horizonData?.length) return -90;
+    const az = ((azimuthDeg % 360) + 360) % 360;
+    const n = horizonData.length;
+    if (n === 1) {
+      const only = Number(horizonData[0]?.altitude);
+      return isFinite(only) ? only : -90;
+    }
+    for (let i = 0; i < n; i += 1) {
+      const next = (i + 1) % n;
+      const a0 = Number(horizonData[i].azimuth);
+      const a1 = Number(horizonData[next].azimuth);
+      const alt0 = Number(horizonData[i].altitude);
+      const alt1 = Number(horizonData[next].altitude);
+      if (!isFinite(a0) || !isFinite(a1) || !isFinite(alt0) || !isFinite(alt1)) continue;
+      let inSegment = false;
+      let t = 0;
+      if (i === n - 1) {
+        const span = (360 - a0) + a1;
+        if (span <= 0) continue;
+        if (az >= a0) {
+          inSegment = true;
+          t = (az - a0) / span;
+        } else if (az < a1) {
+          inSegment = true;
+          t = (az + 360 - a0) / span;
+        }
+      } else if (az >= a0 && az < a1) {
+        inSegment = true;
+        t = a1 === a0 ? 0 : (az - a0) / (a1 - a0);
+      }
+      if (inSegment) return alt0 + (alt1 - alt0) * t;
+    }
+    const fallback = Number(horizonData[0]?.altitude);
+    return isFinite(fallback) ? fallback : -90;
+  }
+
+  function buildViewshedHorizonLookupTexture(horizonData) {
+    const n = Math.max(360, Math.min(8192, (horizonData?.length || 0) * 8 || 4096));
+    const data = new Uint8Array(n * 4);
+    for (let i = 0; i < n; i += 1) {
+      const az = (i / n) * 360;
+      const alt = horizonAltAtAzimuth(horizonData, az);
+      const encoded = Math.max(0, Math.min(255, Math.round(((alt + 90) / 180) * 255)));
+      const idx = i * 4;
+      data[idx] = encoded;
+      data[idx + 1] = 0;
+      data[idx + 2] = 0;
+      data[idx + 3] = 255;
+    }
+    if (!viewshedHorizonLookupTexture || viewshedHorizonLookupTexture.image.width !== n) {
+      viewshedHorizonLookupTexture?.dispose?.();
+      viewshedHorizonLookupTexture = new THREE.DataTexture(data, n, 1, THREE.RGBAFormat);
+      viewshedHorizonLookupTexture.minFilter = THREE.NearestFilter;
+      viewshedHorizonLookupTexture.magFilter = THREE.NearestFilter;
+      viewshedHorizonLookupTexture.wrapS = THREE.RepeatWrapping;
+      viewshedHorizonLookupTexture.wrapT = THREE.ClampToEdgeWrapping;
+      viewshedHorizonLookupTexture.needsUpdate = true;
+    } else {
+      viewshedHorizonLookupTexture.image.data.set(data);
+      viewshedHorizonLookupTexture.needsUpdate = true;
+    }
+    return viewshedHorizonLookupTexture;
+  }
+
+  function visibleHorizonArcs(projected) {
+    const n = projected.length;
+    if (!n) return [];
+    const isVisible = (pt) => pt.z >= -1 && pt.z <= 1;
+    const vis = projected.map(isVisible);
+    const visibleCount = vis.filter(Boolean).length;
+    if (visibleCount < 2) return [];
+    if (visibleCount === n) return [projected.slice()];
+
+    const arcs = [];
+    let current = [];
+    for (let i = 0; i < n; i += 1) {
+      if (vis[i]) {
+        current.push(projected[i]);
+      } else if (current.length) {
+        if (current.length >= 2) arcs.push(current);
+        current = [];
+      }
+    }
+    if (current.length >= 2) arcs.push(current);
+    if (vis[0] && vis[n - 1] && arcs.length >= 2) {
+      const last = arcs[arcs.length - 1];
+      const first = arcs[0];
+      arcs[0] = last.concat(first);
+      arcs.pop();
+    }
+    return arcs.filter((arc) => arc.length >= 2);
+  }
+
+  function buildFpvHorizonScreenMaskFromRing(ring) {
+    if (!ring?.length || !camera) return null;
+    const w = Math.max(1, renderer.domElement.width | 0);
+    const h = Math.max(1, renderer.domElement.height | 0);
+    camera.updateMatrixWorld(true);
+    camera.updateProjectionMatrix();
+
+    const projected = ring.map((p) => {
+      _fpvHorizonProjVec.set(p.x, p.y + FPV_HORIZON_LINE_Y_OFFSET, p.z);
+      _fpvHorizonProjVec.project(camera);
+      return {
+        cx: (_fpvHorizonProjVec.x * 0.5 + 0.5) * w,
+        cy: h - (_fpvHorizonProjVec.y * 0.5 + 0.5) * h,
+        z: _fpvHorizonProjVec.z
+      };
+    });
+    const arcs = visibleHorizonArcs(projected);
+    if (!arcs.length) return null;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(0, 0, w, h);
+    ctx.fillStyle = '#ffffff';
+    for (const arc of arcs) {
+      if (arc.length < 2) continue;
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.lineTo(w, 0);
+      ctx.lineTo(arc[arc.length - 1].cx, arc[arc.length - 1].cy);
+      for (let i = arc.length - 1; i >= 0; i -= 1) ctx.lineTo(arc[i].cx, arc[i].cy);
+      ctx.lineTo(0, arc[0].cy);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    const img = ctx.getImageData(0, 0, w, h);
+    const needed = w * h * 4;
+    if (!fpvHorizonScreenMaskBuffer || fpvHorizonScreenMaskSize.w !== w || fpvHorizonScreenMaskSize.h !== h) {
+      fpvHorizonScreenMaskBuffer = new Uint8Array(needed);
+      fpvHorizonScreenMaskSize = { w, h };
+      fpvHorizonScreenMaskTexture?.dispose?.();
+      fpvHorizonScreenMaskTexture = new THREE.DataTexture(fpvHorizonScreenMaskBuffer, w, h, THREE.RGBAFormat);
+      fpvHorizonScreenMaskTexture.minFilter = THREE.NearestFilter;
+      fpvHorizonScreenMaskTexture.magFilter = THREE.NearestFilter;
+      fpvHorizonScreenMaskTexture.wrapS = THREE.ClampToEdgeWrapping;
+      fpvHorizonScreenMaskTexture.wrapT = THREE.ClampToEdgeWrapping;
+    }
+    const data = fpvHorizonScreenMaskBuffer;
+    for (let cy = 0; cy < h; cy += 1) {
+      for (let cx = 0; cx < w; cx += 1) {
+        const src = (cy * w + cx) * 4;
+        const glY = h - 1 - cy;
+        const dst = (glY * w + cx) * 4;
+        data[dst] = img.data[src] > 127 ? 255 : 0;
+        data[dst + 1] = 0;
+        data[dst + 2] = 0;
+        data[dst + 3] = 255;
+      }
+    }
+    fpvHorizonScreenMaskTexture.needsUpdate = true;
+    return fpvHorizonScreenMaskTexture;
+  }
+
+  function syncFpvHorizonClearColor(active) {
+    scene.background.setHex(active ? FPV_BELOW_HORIZON_CLEAR : SCENE_SKY_CLEAR);
+  }
+
+  function updateSkyDomeScreenMask(screenMaskTexture) {
+    if (!skyDome?.material?.uniforms) return;
+    const u = skyDome.material.uniforms;
+    const enabled = !!screenMaskTexture;
+    u.fpvHorizonMask.value = enabled ? 1.0 : 0.0;
+    u.fpvHorizonScreenMask.value = screenMaskTexture || fpvHorizonScreenMaskFallbackTexture();
+    if (enabled) {
+      u.fpvHorizonMaskResolution.value.set(
+        Math.max(1, renderer.domElement.width),
+        Math.max(1, renderer.domElement.height)
+      );
+    }
+  }
+
+  function updateSkyDomeViewshedMask() {
+    if (!skyDome?.material?.uniforms) return;
+    // FPV uses screen-space horizon mask (same as terrain); not world-space az/alt.
+    skyDome.material.uniforms.viewshedMaskEnabled.value = 0.0;
+  }
+
+  function formatDisplayValue(key, value) {
+    if (key === 'hazeStartM' || key === 'fadeDistanceM') return `${Math.round(value)}m`;
+    return Number(value).toFixed(2);
+  }
+
+  function syncDisplayControlValues() {
+    if (els.displayBrightnessValue) els.displayBrightnessValue.textContent = formatDisplayValue('brightness', displaySettings.brightness);
+    if (els.displayGammaValue) els.displayGammaValue.textContent = formatDisplayValue('gamma', displaySettings.gamma);
+    if (els.displayHazeStartValue) els.displayHazeStartValue.textContent = formatDisplayValue('hazeStartM', displaySettings.hazeStartM);
+    if (els.displayHazeStrengthValue) els.displayHazeStrengthValue.textContent = formatDisplayValue('hazeStrength', displaySettings.hazeStrength);
+    if (els.displayDesaturateValue) els.displayDesaturateValue.textContent = formatDisplayValue('desaturateStrength', displaySettings.desaturateStrength);
+    if (els.displayFadeDistanceValue) els.displayFadeDistanceValue.textContent = formatDisplayValue('fadeDistanceM', displaySettings.fadeDistanceM);
+  }
+
+  function syncTerrainPaintControlValues() {
+    if (els.paintHeightStrengthValue) els.paintHeightStrengthValue.textContent = terrainPaintSettings.heightStrength.toFixed(2);
+    if (els.paintRelativeHeightValue) els.paintRelativeHeightValue.textContent = terrainPaintSettings.relativeHeightStrength.toFixed(2);
+    if (els.paintHeightContrastValue) els.paintHeightContrastValue.textContent = terrainPaintSettings.heightContrast.toFixed(2);
+    if (els.paintHillshadeValue) els.paintHillshadeValue.textContent = terrainPaintSettings.hillshadeStrength.toFixed(2);
+    if (els.paintDistanceStrengthValue) els.paintDistanceStrengthValue.textContent = terrainPaintSettings.distanceStrength.toFixed(2);
+    if (els.paintDistanceDesaturateValue) els.paintDistanceDesaturateValue.textContent = terrainPaintSettings.distanceDesaturate.toFixed(2);
+    if (els.paintDistanceStartValue) els.paintDistanceStartValue.textContent = `${Math.round(terrainPaintSettings.distanceStartM)}m`;
+    if (els.paintDistanceEndValue) els.paintDistanceEndValue.textContent = `${Math.round(terrainPaintSettings.distanceEndM)}m`;
+  }
+
+  function terrainPaintHeightRange(material) {
+    const minY = Number(material?.userData?.paintMinY);
+    const maxY = Number(material?.userData?.paintMaxY);
+    if (!Number.isFinite(minY) || !Number.isFinite(maxY) || Math.abs(maxY - minY) < 0.01) {
+      return { minY: -80, maxY: 180 };
+    }
+    return { minY, maxY };
+  }
+
+  function terrainPaintReferenceHeight() {
+    try {
+      if (currentFocus && currentPatch) {
+        const local = localFromLonLatUnbounded(currentFocus.lng, currentFocus.lat);
+        if (local) return groundYAtLocal(local.x, local.z);
+      }
+    } catch (_) {}
+    return Number(cameraState.target?.y || 0) - 80;
+  }
+
+  function updateMaterialPaintRange(mesh) {
+    const position = mesh?.geometry?.attributes?.position;
+    const material = mesh?.material;
+    if (!position || !material) return;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (let i = 0; i < position.count; i += 1) {
+      const y = position.getY(i);
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+    if (!Number.isFinite(minY) || !Number.isFinite(maxY)) return;
+    material.userData.paintMinY = minY;
+    material.userData.paintMaxY = maxY;
+    applyDisplayMaterial(material);
+  }
+
+  function disposeAerialTextures() {
+    aerialTexture?.dispose?.();
+    aerialTextureOuter?.dispose?.();
+    aerialTexture = null;
+    aerialTextureOuter = null;
+  }
+
+  function terrainAerialUvUniforms() {
+    if (!currentPatch) return null;
+    const p = currentPatch;
+    const ring = terrainOuterRing;
+    const centerPx = patchCenterDemPx(p);
+    const hiScale = 2 ** ((p.effectiveAerialZ ?? AERIAL_Z) - TERRAIN_Z);
+    const hiCount = Math.max(1, p.aerialCount || 1);
+    const hiDenom = TILE_SIZE * p.mpp * hiCount;
+    const hiUx = hiScale / hiDenom;
+    const hiU0 = ((p.originX + centerPx.x / TILE_SIZE) * hiScale - (p.aerialOriginX ?? 0)) / hiCount;
+    const hiVy = -hiScale / hiDenom;
+    const hiV0 = 1 - ((p.originY + centerPx.y / TILE_SIZE) * hiScale - (p.aerialOriginY ?? 0)) / hiCount;
+
+    let outerUx = hiUx;
+    let outerU0 = hiU0;
+    let outerVy = hiVy;
+    let outerV0 = hiV0;
+    if (ring) {
+      const ringMpp = ring.ringMpp ?? metersPerPixel(p.focus?.lat ?? DEFAULT_OBSERVER_LAT, ring.demZ);
+      const ringPx = Math.max(1, ring.px || 1);
+      const ringFocusPxX = ring.focusPxX ?? ringPx / 2;
+      const ringFocusPxY = ring.focusPxY ?? ringPx / 2;
+      outerUx = 1 / (ringMpp * ringPx);
+      outerU0 = ringFocusPxX / ringPx;
+      outerVy = -1 / (ringMpp * ringPx);
+      outerV0 = 1 - ringFocusPxY / ringPx;
+    }
+
+    return { hiUx, hiU0, hiVy, hiV0, outerUx, outerU0, outerVy, outerV0 };
+  }
+
+  function attachTerrainAerialUniforms(shader, coeffs) {
+    const c = coeffs || terrainAerialUvUniforms() || {
+      hiUx: 0, hiU0: 0.5, hiVy: 0, hiV0: 0.5,
+      outerUx: 0, outerU0: 0.5, outerVy: 0, outerV0: 0.5
+    };
+    shader.uniforms.hiUx = { value: c.hiUx };
+    shader.uniforms.hiU0 = { value: c.hiU0 };
+    shader.uniforms.hiVy = { value: c.hiVy };
+    shader.uniforms.hiV0 = { value: c.hiV0 };
+    shader.uniforms.outerUx = { value: c.outerUx };
+    shader.uniforms.outerU0 = { value: c.outerU0 };
+    shader.uniforms.outerVy = { value: c.outerVy };
+    shader.uniforms.outerV0 = { value: c.outerV0 };
+  }
+
+  function attachTerrainAerialShader(material) {
+    const AERIAL_SHADER_VERSION = 3;
+    if (!material?.userData?.terrainAerial) return;
+    if (material.userData.terrainAerialAttached === AERIAL_SHADER_VERSION) return;
+    material.userData.terrainAerialAttached = AERIAL_SHADER_VERSION;
+    material.userData.terrainAerialShader = null;
+    const priorCompile = material.onBeforeCompile;
+    material.onBeforeCompile = (shader) => {
+      priorCompile?.(shader);
+      shader.uniforms.mapOuter = { value: aerialTextureOuter || aerialTexture };
+      attachTerrainAerialUniforms(shader);
+      shader.vertexShader = shader.vertexShader.replace(
+        '#include <common>',
+        `
+          #include <common>
+          varying vec2 vTerrainLocalXZ;
+        `
+      );
+      shader.vertexShader = shader.vertexShader.replace(
+        '#include <begin_vertex>',
+        `
+          #include <begin_vertex>
+          vTerrainLocalXZ = vec2(position.x, position.z);
+        `
+      );
+      shader.fragmentShader = shader.fragmentShader.replace(
+        '#include <map_pars_fragment>',
+        `
+          #include <map_pars_fragment>
+          uniform sampler2D mapOuter;
+          uniform float hiUx;
+          uniform float hiU0;
+          uniform float hiVy;
+          uniform float hiV0;
+          uniform float outerUx;
+          uniform float outerU0;
+          uniform float outerVy;
+          uniform float outerV0;
+          varying vec2 vTerrainLocalXZ;
+        `
+      );
+      shader.fragmentShader = shader.fragmentShader.replace(
+        '#include <map_fragment>',
+        `
+          float hiU = hiUx * vTerrainLocalXZ.x + hiU0;
+          float hiV = hiVy * vTerrainLocalXZ.y + hiV0;
+          float outerU = outerUx * vTerrainLocalXZ.x + outerU0;
+          float outerV = outerVy * vTerrainLocalXZ.y + outerV0;
+          bool hiInside = hiU >= 0.0 && hiU <= 1.0 && hiV >= 0.0 && hiV <= 1.0;
+          bool outerInside = outerU >= 0.0 && outerU <= 1.0 && outerV >= 0.0 && outerV <= 1.0;
+          vec4 sampledDiffuseColor;
+          if (hiInside) {
+            sampledDiffuseColor = texture2D(map, vec2(hiU, hiV));
+          } else if (outerInside) {
+            sampledDiffuseColor = texture2D(mapOuter, vec2(outerU, outerV));
+          } else {
+            discard;
+          }
+          diffuseColor *= sampledDiffuseColor;
+        `
+      );
+      material.userData.terrainAerialShader = shader;
+    };
+    material.needsUpdate = true;
+  }
+
+  function updateTerrainAerialUniforms(material) {
+    const shader = material?.userData?.terrainAerialShader;
+    if (!shader?.uniforms) return;
+    shader.uniforms.mapOuter.value = aerialTextureOuter || aerialTexture;
+    const coeffs = terrainAerialUvUniforms();
+    if (!coeffs) return;
+    shader.uniforms.hiUx.value = coeffs.hiUx;
+    shader.uniforms.hiU0.value = coeffs.hiU0;
+    shader.uniforms.hiVy.value = coeffs.hiVy;
+    shader.uniforms.hiV0.value = coeffs.hiV0;
+    shader.uniforms.outerUx.value = coeffs.outerUx;
+    shader.uniforms.outerU0.value = coeffs.outerU0;
+    shader.uniforms.outerVy.value = coeffs.outerVy;
+    shader.uniforms.outerV0.value = coeffs.outerV0;
+  }
+
+  const TERRAIN_DISPLAY_SHADER_VERSION = 6;
+  const TERRAIN_HORIZON_MASK_DISCARD = `
+            if (fpvHorizonMask > 0.5) {
+              vec2 maskUv = vec2(gl_FragCoord.x / fpvHorizonMaskResolution.x, gl_FragCoord.y / fpvHorizonMaskResolution.y);
+              if (texture2D(fpvHorizonScreenMask, maskUv).r > 0.5) discard;
+            }
+  `;
+
+  function fpvHorizonScreenMaskFallbackTexture() {
+    if (!fpvHorizonScreenMaskFallback) {
+      fpvHorizonScreenMaskFallback = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1, THREE.RGBAFormat);
+      fpvHorizonScreenMaskFallback.needsUpdate = true;
+    }
+    return fpvHorizonScreenMaskFallback;
+  }
+
+  function ensureTerrainHorizonMaskUniforms(material) {
+    if (!material) return null;
+    if (!material.userData.terrainHorizonMaskUniforms) {
+      material.userData.terrainHorizonMaskUniforms = {
+        fpvHorizonMask: { value: 0 },
+        fpvHorizonScreenMask: { value: fpvHorizonScreenMaskFallbackTexture() },
+        fpvHorizonMaskResolution: { value: new THREE.Vector2(1, 1) }
+      };
+    }
+    return material.userData.terrainHorizonMaskUniforms;
+  }
+
+  function updateTerrainHorizonMaskUniforms(material, screenMaskTexture = null) {
+    if (!material) return;
+    const maskUniforms = ensureTerrainHorizonMaskUniforms(material);
+    if (!maskUniforms) return;
+    const profile = horizonDrawProfileData();
+    const enabled = !!(cameraState.observerMode && profile?.length && screenMaskTexture);
+    maskUniforms.fpvHorizonMask.value = enabled ? 1 : 0;
+    maskUniforms.fpvHorizonScreenMask.value = screenMaskTexture || fpvHorizonScreenMaskFallbackTexture();
+    if (!enabled) return;
+    maskUniforms.fpvHorizonMaskResolution.value.set(
+      Math.max(1, renderer.domElement.width),
+      Math.max(1, renderer.domElement.height)
+    );
+  }
+
+  function applyDisplayMaterial(material) {
+    if (!material) return;
+    material.color?.setScalar?.(1);
+    material.fog = true;
+    const aerialSurface = imageryKey !== 'terrain';
+    const terrainPaintOverlay = aerialSurface ? 0 : 1;
+    if (material.userData.displayControlsVersion !== TERRAIN_DISPLAY_SHADER_VERSION) {
+      material.userData.displayControlsAttached = false;
+      material.userData.displayControlsVersion = TERRAIN_DISPLAY_SHADER_VERSION;
+      material.userData.terrainAerialAttached = 0;
+      material.userData.terrainAerialShader = null;
+    }
+    if (!material.userData.displayControlsAttached) {
+      material.userData.displayControlsAttached = true;
+      const horizonMaskUniforms = ensureTerrainHorizonMaskUniforms(material);
+      material.onBeforeCompile = (shader) => {
+        shader.uniforms.fpvHorizonMask = horizonMaskUniforms.fpvHorizonMask;
+        shader.uniforms.fpvHorizonScreenMask = horizonMaskUniforms.fpvHorizonScreenMask;
+        shader.uniforms.fpvHorizonMaskResolution = horizonMaskUniforms.fpvHorizonMaskResolution;
+        shader.uniforms.displayBrightness = { value: displaySettings.brightness };
+        shader.uniforms.displayGamma = { value: displaySettings.gamma };
+        shader.uniforms.displayDesaturate = { value: displaySettings.desaturateStrength };
+        shader.uniforms.paintHeightStrength = { value: terrainPaintSettings.heightStrength };
+        shader.uniforms.paintRelativeHeightStrength = { value: terrainPaintSettings.relativeHeightStrength };
+        shader.uniforms.paintHeightContrast = { value: terrainPaintSettings.heightContrast };
+        shader.uniforms.paintHillshadeStrength = { value: terrainPaintSettings.hillshadeStrength };
+        shader.uniforms.paintDistanceStrength = { value: terrainPaintSettings.distanceStrength };
+        shader.uniforms.paintDistanceDesaturate = { value: terrainPaintSettings.distanceDesaturate };
+        shader.uniforms.paintDistanceStart = { value: terrainPaintSettings.distanceStartM };
+        shader.uniforms.paintDistanceEnd = { value: terrainPaintSettings.distanceEndM };
+        shader.uniforms.paintDistanceBands = { value: terrainPaintSettings.distanceBands ? 1.0 : 0.0 };
+        shader.uniforms.paintReferenceHeight = { value: terrainPaintReferenceHeight() };
+        const range = terrainPaintHeightRange(material);
+        shader.uniforms.paintHeightMin = { value: range.minY };
+        shader.uniforms.paintHeightMax = { value: range.maxY };
+        shader.vertexShader = shader.vertexShader.replace(
+          '#include <common>',
+          `
+            #include <common>
+            varying vec3 vPaintWorldPosition;
+            varying vec3 vPaintNormal;
+            varying float vPaintHeight;
+          `
+        );
+        shader.vertexShader = shader.vertexShader.replace(
+          '#include <begin_vertex>',
+          `
+            #include <begin_vertex>
+            vPaintWorldPosition = (modelMatrix * vec4(transformed, 1.0)).xyz;
+            vPaintNormal = normalize(normalMatrix * normal);
+            vPaintHeight = transformed.y;
+          `
+        );
+        shader.fragmentShader = shader.fragmentShader.replace(
+          '#include <dithering_fragment>',
+          `
+            float paintRange = max(1.0, paintHeightMax - paintHeightMin);
+            if (paintTerrainOverlay > 0.5) {
+              float heightT = clamp((vPaintHeight - paintHeightMin) / paintRange, 0.0, 1.0);
+              heightT = pow(heightT, 1.0 / max(paintHeightContrast, 0.001));
+              vec3 lowTint = vec3(0.38, 0.48, 0.27);
+              vec3 midTint = vec3(0.74, 0.58, 0.36);
+              vec3 highTint = vec3(0.78, 0.83, 0.88);
+              vec3 heightTint = mix(lowTint, midTint, smoothstep(0.05, 0.62, heightT));
+              heightTint = mix(heightTint, highTint, smoothstep(0.58, 1.0, heightT));
+              gl_FragColor.rgb = mix(gl_FragColor.rgb, gl_FragColor.rgb * heightTint * 1.28, paintHeightStrength);
+
+              float relativeT = smoothstep(-0.22, 0.26, ((vPaintHeight - paintReferenceHeight) / paintRange) * paintHeightContrast);
+              vec3 relativeTint = mix(vec3(0.72, 0.82, 1.0), vec3(1.12, 0.94, 0.72), relativeT);
+              gl_FragColor.rgb = mix(gl_FragColor.rgb, gl_FragColor.rgb * relativeTint, paintRelativeHeightStrength);
+
+              vec3 paintSun = normalize(vec3(-0.45, 0.78, 0.42));
+              float shade = dot(normalize(vPaintNormal), paintSun) * 0.5 + 0.5;
+              shade = mix(1.0 - paintHillshadeStrength * 0.65, 1.0 + paintHillshadeStrength * 0.55, shade);
+              gl_FragColor.rgb *= shade;
+            }
+
+            float paintDistance = distance(vPaintWorldPosition, cameraPosition);
+            float distanceT = smoothstep(paintDistanceStart, max(paintDistanceStart + 1.0, paintDistanceEnd), paintDistance);
+            float nearT = 1.0 - smoothstep(0.0, paintDistanceStart, paintDistance);
+            float distanceLum = dot(gl_FragColor.rgb, vec3(0.299, 0.587, 0.114));
+            vec3 farGrey = mix(gl_FragColor.rgb, vec3(distanceLum), paintDistanceDesaturate * distanceT);
+            vec3 farCool = mix(farGrey, vec3(0.66, 0.78, 0.92), 0.52 * distanceT);
+            farCool = mix(farCool, vec3(0.82, 0.88, 0.95), 0.18 * distanceT);
+            vec3 nearRich = gl_FragColor.rgb * mix(1.0, 1.10, nearT * paintDistanceStrength);
+            gl_FragColor.rgb = mix(nearRich, farCool, clamp(paintDistanceStrength * distanceT, 0.0, 1.0));
+
+            float band = smoothstep(0.48, 0.5, abs(fract(paintDistance / 2500.0) - 0.5));
+            gl_FragColor.rgb *= 1.0 - (1.0 - band) * paintDistanceBands * paintDistanceStrength * 0.08;
+
+            gl_FragColor.rgb *= displayBrightness;
+            gl_FragColor.rgb = pow(max(gl_FragColor.rgb, vec3(0.0)), vec3(1.0 / max(displayGamma, 0.001)));
+            float displayLum = dot(gl_FragColor.rgb, vec3(0.299, 0.587, 0.114));
+            gl_FragColor.rgb = mix(gl_FragColor.rgb, vec3(displayLum), displayDesaturate);
+            ${TERRAIN_HORIZON_MASK_DISCARD}
+            #include <dithering_fragment>
+          `
+        );
+        shader.fragmentShader = shader.fragmentShader.replace(
+          'void main() {',
+          `
+            varying vec3 vPaintWorldPosition;
+            varying vec3 vPaintNormal;
+            varying float vPaintHeight;
+            uniform float fpvHorizonMask;
+            uniform sampler2D fpvHorizonScreenMask;
+            uniform vec2 fpvHorizonMaskResolution;
+            uniform float displayBrightness;
+            uniform float displayGamma;
+            uniform float displayDesaturate;
+            uniform float paintTerrainOverlay;
+            uniform float paintHeightStrength;
+            uniform float paintRelativeHeightStrength;
+            uniform float paintHeightContrast;
+            uniform float paintHillshadeStrength;
+            uniform float paintDistanceStrength;
+            uniform float paintDistanceDesaturate;
+            uniform float paintDistanceStart;
+            uniform float paintDistanceEnd;
+            uniform float paintDistanceBands;
+            uniform float paintReferenceHeight;
+            uniform float paintHeightMin;
+            uniform float paintHeightMax;
+            void main() {
+          `
+        );
+        shader.uniforms.paintTerrainOverlay = { value: terrainPaintOverlay };
+        material.userData.displayShader = shader;
+      };
+      material.needsUpdate = true;
+    }
+    const shader = material.userData.displayShader;
+    if (shader?.uniforms) {
+      let distStart;
+      let distEnd;
+      let distStrength;
+      let distDesat;
+      if (aerialSurface) {
+        distStart = 80000;
+        distEnd = 90000;
+        distStrength = 0;
+        distDesat = 0;
+      } else {
+        distStart = terrainPaintSettings.distanceStartM;
+        distEnd = terrainPaintSettings.distanceEndM;
+        distStrength = terrainPaintSettings.distanceStrength;
+        distDesat = terrainPaintSettings.distanceDesaturate;
+      }
+      shader.uniforms.displayBrightness.value = displaySettings.brightness;
+      shader.uniforms.displayGamma.value = displaySettings.gamma;
+      shader.uniforms.displayDesaturate.value = displaySettings.desaturateStrength;
+      shader.uniforms.paintTerrainOverlay.value = terrainPaintOverlay;
+      shader.uniforms.paintHeightStrength.value = terrainPaintSettings.heightStrength;
+      shader.uniforms.paintRelativeHeightStrength.value = terrainPaintSettings.relativeHeightStrength;
+      shader.uniforms.paintHeightContrast.value = terrainPaintSettings.heightContrast;
+      shader.uniforms.paintHillshadeStrength.value = terrainPaintSettings.hillshadeStrength;
+      shader.uniforms.paintDistanceStrength.value = distStrength;
+      shader.uniforms.paintDistanceDesaturate.value = distDesat;
+      shader.uniforms.paintDistanceStart.value = distStart;
+      shader.uniforms.paintDistanceEnd.value = distEnd;
+      shader.uniforms.paintDistanceBands.value = terrainPaintSettings.distanceBands ? 1.0 : 0.0;
+      shader.uniforms.paintReferenceHeight.value = terrainPaintReferenceHeight();
+      const range = terrainPaintHeightRange(material);
+      shader.uniforms.paintHeightMin.value = range.minY;
+      shader.uniforms.paintHeightMax.value = range.maxY;
+    }
+    if (material.userData.terrainAerial) {
+      attachTerrainAerialShader(material);
+      updateTerrainAerialUniforms(material);
+    }
+    updateTerrainHorizonMaskUniforms(material);
+  }
+
+  function applyDisplaySettings() {
+    syncTerrainPaintControlValues();
+    syncDisplayControlValues();
+
+    renderer.domElement.style.filter = '';
+    renderer.toneMappingExposure = displaySettings.brightness;
+
+    if (scene.fog) {
+      if (displaySettings.hazeStrength <= 0.001) {
+        scene.fog.near = 1e9;
+        scene.fog.far = 1e9;
+      } else {
+        scene.fog.near = displaySettings.hazeStartM;
+        scene.fog.far = displaySettings.hazeStartM + (displaySettings.fadeDistanceM / (0.28 + displaySettings.hazeStrength * 1.7));
+      }
+    }
+
+    if (skyDome?.material?.uniforms) {
+      const uniforms = skyDome.material.uniforms;
+      uniforms.hazeStart.value = -0.12 + displaySettings.hazeStrength * 0.12;
+      uniforms.hazeEnd.value = 0.34 + displaySettings.hazeStrength * 0.18;
+      uniforms.exponent.value = Math.max(0.7, Math.min(2.2, 1.35 / displaySettings.gamma));
+    }
+
+    applyDisplayMaterial(terrainMesh?.material);
+  }
+
+  function updateTerrainMaterialUniforms() {
+    applyDisplayMaterial(terrainMesh?.material);
+  }
+
+  function updateAstroOverlay() {
+    astronomyOverlay?.updateOverlay(false, { repositionOnly: true });
+  }
+
+  function syncAstroReadout() {
+    const show = !!cameraState.observerMode;
+    els.sunReadoutWrap?.classList.toggle('hidden', !show);
+    els.moonReadoutWrap?.classList.toggle('hidden', !show);
+    if (!show) return;
+
+    const fmtDeg = (v) => (Number.isFinite(v) ? Number(v).toFixed(1) : '--');
+    const horizons = astronomyOverlay?.getBodyHorizons?.();
+    const sun = horizons?.sun;
+    const moon = horizons?.moon;
+    if (els.sunAltReadout) els.sunAltReadout.textContent = fmtDeg(sun?.altitude);
+    if (els.sunAziReadout) els.sunAziReadout.textContent = fmtDeg(sun?.azimuth);
+    if (els.moonAltReadout) els.moonAltReadout.textContent = fmtDeg(moon?.altitude);
+    if (els.moonAziReadout) els.moonAziReadout.textContent = fmtDeg(moon?.azimuth);
+  }
+
   function tileUrl(template, z, x, y) {
     const s = Math.abs((x + y + z) % 4);
     return template
@@ -830,6 +2368,27 @@
     return (40075016.686 * Math.cos(lat * Math.PI / 180)) / (TILE_SIZE * (2 ** z));
   }
 
+  function corePatchHalfM(lat) {
+    const count = demAreaKey === 'double' ? TERRAIN_TILE_COUNT_DOUBLE : TERRAIN_TILE_COUNT;
+    const mpp = metersPerPixel(lat, TERRAIN_Z);
+    return (count * TILE_SIZE * mpp) / 2;
+  }
+
+  function buildTerrainOuterRingConfig(lat) {
+    const coreHalf = corePatchHalfM(lat);
+    return {
+      demZ: TERRAIN_OUTER_Z,
+      aerialZ: TERRAIN_OUTER_AERIAL_Z,
+      tileRadius: TERRAIN_OUTER_TILE_RADIUS,
+      extentRadiusM: TERRAIN_OUTER_EXTENT_M,
+      innerBoundaryHalfM: coreHalf
+    };
+  }
+
+  function terrainOuterRingLayers() {
+    return terrainOuterRing ? [terrainOuterRing] : [];
+  }
+
   function terrainTileCount() {
     return demAreaKey === 'double' ? TERRAIN_TILE_COUNT_DOUBLE : TERRAIN_TILE_COUNT;
   }
@@ -839,9 +2398,26 @@
   }
 
   function aerialZoomForTileCount(count) {
-    const requestedScale = 2 ** (AERIAL_Z - TERRAIN_Z);
-    const requestedTexturePx = count * requestedScale * TILE_SIZE;
-    return requestedTexturePx <= renderer.capabilities.maxTextureSize ? AERIAL_Z : TERRAIN_Z;
+    return AERIAL_Z;
+  }
+
+  function configureTerrainTexture(texture) {
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.wrapS = THREE.ClampToEdgeWrapping;
+    texture.wrapT = THREE.ClampToEdgeWrapping;
+    texture.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+    return texture;
+  }
+
+  function downscaleCanvasIfNeeded(canvas, maxPx) {
+    const maxDim = Math.max(canvas.width, canvas.height);
+    if (maxDim <= maxPx) return canvas;
+    const scale = maxPx / maxDim;
+    const out = document.createElement('canvas');
+    out.width = Math.max(1, Math.round(canvas.width * scale));
+    out.height = Math.max(1, Math.round(canvas.height * scale));
+    out.getContext('2d').drawImage(canvas, 0, 0, out.width, out.height);
+    return out;
   }
 
   function offsetLonLat(lat, lng, eastM, northM) {
@@ -1093,15 +2669,76 @@
     return collected;
   }
 
+  async function fetchMonumentsFromSources(sourceIds, queryOpts) {
+    const collected = [];
+    let failures = 0;
+    await Promise.all(sourceIds.map(async (sourceId) => {
+      try {
+        const features = await fetchArcgisFeaturesFromSource(sourceId, queryOpts);
+        collected.push(...features);
+      } catch (e) {
+        failures += 1;
+        console.warn(`[nms] ${sourceId} query failed:`, e?.message || e);
+      }
+    }));
+    if (!collected.length && failures === sourceIds.length) {
+      throw new Error('Monument data unavailable from all sources (network or CORS).');
+    }
+    return collected;
+  }
+
   async function fetchAllMonumentsInEnvelope(env, maxFeatures = 12000) {
-    const batches = await Promise.all([MONUMENT_SOURCE_ROI, MONUMENT_SOURCE_NI].map((sourceId) => (
-      fetchArcgisFeaturesFromSource(sourceId, {
-        where: whereForSourceAllMonuments(sourceId),
+    const roi = await fetchMonumentsFromSources([MONUMENT_SOURCE_ROI], {
+      where: whereForSourceAllMonuments(MONUMENT_SOURCE_ROI),
+      envelope: env,
+      maxFeatures
+    }).catch(() => []);
+    const ni = await fetchMonumentsFromSources([MONUMENT_SOURCE_NI], {
+      where: whereForSourceAllMonuments(MONUMENT_SOURCE_NI),
+      envelope: env,
+      maxFeatures
+    }).catch(() => []);
+    return [...roi, ...ni];
+  }
+
+  async function fetchRelationalMonumentsInEnvelope(env) {
+    const warnings = [];
+    let roi = [];
+    let ni = [];
+
+    try {
+      roi = await fetchArcgisFeaturesFromSource(MONUMENT_SOURCE_ROI, {
+        where: whereForSourceAllTypes(MONUMENT_SOURCE_ROI),
         envelope: env,
-        maxFeatures
-      })
-    )));
-    return batches.flat();
+        maxFeatures: HORIZON_RELATIONAL_ROI_MAX
+      });
+    } catch (e) {
+      const msg = e?.message || String(e);
+      warnings.push(`ROI query failed: ${msg}`);
+      console.warn('[horizon-relational] ROI fetch failed:', msg);
+    }
+
+    try {
+      ni = await fetchArcgisFeaturesFromSource(MONUMENT_SOURCE_NI, {
+        where: whereForSourceAllMonuments(MONUMENT_SOURCE_NI),
+        envelope: env,
+        maxFeatures: HORIZON_RELATIONAL_NI_MAX
+      });
+    } catch (e) {
+      const msg = e?.message || String(e);
+      warnings.push(`NI HED query failed: ${msg}`);
+      console.warn('[horizon-relational] NI fetch failed:', msg);
+    }
+
+    if (!roi.length && !ni.length) {
+      throw new Error(warnings.length ? warnings.join(' · ') : 'No monuments returned from ROI or NI.');
+    }
+
+    return {
+      features: [...roi, ...ni],
+      warnings,
+      sourceCounts: { roi: roi.length, ni: ni.length }
+    };
   }
 
   function monumentStableKey(props, lng, lat) {
@@ -1270,6 +2907,18 @@
       if (!set.has(mClass)) set.set(mClass, true);
     }
 
+    for (const m of horizonClusterMarkers) {
+      const mClass = String(m.cluster?.members?.[0]?.props?.MONUMENT_CLASS || m.props?.MONUMENT_CLASS || '').trim();
+      if (!mClass) continue;
+      if (!set.has(mClass)) set.set(mClass, true);
+    }
+
+    for (const m of horizonMemberMarkers) {
+      const mClass = String(m.props?.MONUMENT_CLASS || '').trim();
+      if (!mClass) continue;
+      if (!set.has(mClass)) set.set(mClass, true);
+    }
+
     const entries = Array.from(set.keys()).sort((a, b) => a.localeCompare(b));
     els.legendInlineList.replaceChildren();
     for (const mClass of entries) {
@@ -1316,7 +2965,13 @@
     for (const sourceId of [MONUMENT_SOURCE_ROI, MONUMENT_SOURCE_NI]) {
       const where = whereForSourceType(sourceId, monumentClass);
       if (!where || where === '1=0') continue;
-      const features = await fetchArcgisFeaturesFromSource(sourceId, { where, maxFeatures: 20000 });
+      let features = [];
+      try {
+        features = await fetchArcgisFeaturesFromSource(sourceId, { where, maxFeatures: 20000 });
+      } catch (e) {
+        console.warn(`[nms] ${sourceId} query failed:`, e?.message || e);
+        continue;
+      }
       for (const f of features) {
         const g = f.geometry;
         const a = f.attributes || {};
@@ -1357,6 +3012,44 @@
       if (key === 'config' || key === 'presets' || key === 'saved-views' || key === 'about') icon.className = open ? 'ph-bold ph-caret-up' : 'ph-bold ph-caret-down';
       else icon.className = open ? 'ph-bold ph-minus' : 'ph-bold ph-plus';
     }
+  }
+
+  function setConfigSectionOpen(section, open) {
+    if (!section) return;
+    const body = section.querySelector('.config-section-body');
+    const icon = section.querySelector('.config-section-toggle i');
+    if (!body) return;
+    body.classList.toggle('hidden', !open);
+    if (icon) icon.className = open ? 'ph-bold ph-caret-up' : 'ph-bold ph-caret-down';
+  }
+
+  function initConfigInnerSections() {
+    document.querySelectorAll('.panel-config .panel.config-inner').forEach((section) => {
+      if (section.querySelector('.config-section-head')) return;
+      const title = section.querySelector(':scope > .panel-title');
+      if (!title) return;
+      const contentNodes = [];
+      let node = title.nextSibling;
+      while (node) {
+        contentNodes.push(node);
+        node = node.nextSibling;
+      }
+      const head = document.createElement('div');
+      head.className = 'config-section-head';
+      const toggle = document.createElement('button');
+      toggle.type = 'button';
+      toggle.className = 'panel-toggle config-section-toggle';
+      toggle.setAttribute('aria-label', 'Toggle configuration section');
+      toggle.innerHTML = '<i class="ph-bold ph-caret-down"></i>';
+      head.appendChild(title);
+      head.appendChild(toggle);
+      section.insertBefore(head, section.firstChild);
+      const body = document.createElement('div');
+      body.className = 'config-section-body hidden';
+      contentNodes.forEach((child) => body.appendChild(child));
+      section.appendChild(body);
+      setConfigSectionOpen(section, false);
+    });
   }
 
   async function selectType(monumentClass) {
@@ -1553,27 +3246,42 @@
     }
   }
 
+  async function drawTileIntoMosaic(ctx, template, z, x, y, dx, dy, crossOrigin) {
+    const slotX = dx * TILE_SIZE;
+    const slotY = dy * TILE_SIZE;
+    try {
+      const img = await loadImage(tileUrl(template, z, x, y), crossOrigin);
+      ctx.drawImage(img, slotX, slotY, TILE_SIZE, TILE_SIZE);
+      return true;
+    } catch (_) {}
+    if (z > 0) {
+      try {
+        const img = await loadImage(tileUrl(template, z - 1, Math.floor(x / 2), Math.floor(y / 2)), crossOrigin);
+        ctx.drawImage(img, slotX, slotY, TILE_SIZE, TILE_SIZE);
+        return true;
+      } catch (_) {}
+    }
+    return false;
+  }
+
   async function drawTileMosaic(template, z, originX, originY, count, options = {}) {
     const canvas = document.createElement('canvas');
     canvas.width = canvas.height = count * TILE_SIZE;
     const ctx = canvas.getContext('2d', { willReadFrequently: !!options.read });
-    const failures = [];
+    const crossOrigin = options.crossOrigin ?? 'anonymous';
+    let failures = 0;
 
     await Promise.all(Array.from({ length: count * count }, async (_, i) => {
       const dx = i % count;
       const dy = Math.floor(i / count);
       const x = originX + dx;
       const y = originY + dy;
-      try {
-        const img = await loadImage(tileUrl(template, z, x, y), options.crossOrigin ?? 'anonymous');
-        ctx.drawImage(img, dx * TILE_SIZE, dy * TILE_SIZE, TILE_SIZE, TILE_SIZE);
-      } catch (e) {
-        failures.push(e);
-      }
+      const ok = await drawTileIntoMosaic(ctx, template, z, x, y, dx, dy, crossOrigin);
+      if (!ok) failures += 1;
     }));
 
-    if (options.required && failures.length === count * count) {
-      throw failures[0] || new Error('No tiles loaded.');
+    if (options.required && failures === count * count) {
+      throw new Error('No tiles loaded.');
     }
     return canvas;
   }
@@ -1736,61 +3444,190 @@
     mesh.geometry.computeVertexNormals();
   }
 
-  function rebuildTerrainHeights() {
-    if (terrainMesh && baseElev && currentPatch) {
-      applyUvSampledHeights(terrainMesh, baseElev, baseElevSize, baseCenterElev, verticalExaggeration);
-    }
-
-    if (horizonMesh && horizonElev && horizonPatchMeters) {
-      applyUvSampledHeights(horizonMesh, horizonElev, horizonElevSize, horizonCenterElev, verticalExaggeration, -1.2);
-    }
-
-    addSiteMarker(currentPatch.site);
+  function centrePatchHalfM() {
+    if (currentPatch?.patchMeters) return currentPatch.patchMeters / 2;
+    const lat = currentFocus?.lat ?? selectedSite?.lat ?? DEFAULT_OBSERVER_LAT;
+    return corePatchHalfM(lat);
   }
 
-  function addHorizonSkirt(texture, elev, elevSize, centerElev, horizonPatch) {
-    if (horizonMesh) {
-      scene.remove(horizonMesh);
-      horizonMesh.geometry.dispose();
-      horizonMesh.material.map?.dispose?.();
-      horizonMesh.material.dispose();
-      horizonMesh = null;
-    }
-    horizonElev = elev;
-    horizonElevSize = elevSize;
-    horizonCenterElev = centerElev;
-    horizonPatchMeters = horizonPatch.meters;
-    horizonPatchOriginX = horizonPatch.originX;
-    horizonPatchOriginY = horizonPatch.originY;
-    horizonPatchCount = horizonPatch.count;
+  function ringOutsideDistanceM(x, z, innerHalfM) {
+    const outsideX = Math.max(-innerHalfM - x, x - innerHalfM, 0);
+    const outsideZ = Math.max(-innerHalfM - z, z - innerHalfM, 0);
+    return Math.max(outsideX, outsideZ);
+  }
 
-    const segments = 80;
+  function centreElevAtLocal(x, z) {
+    if (!baseElev || !currentPatch) return 0;
+    const u = (x / currentPatch.patchMeters) + 0.5;
+    const v = (z / currentPatch.patchMeters) + 0.5;
+    return sampleElevation(baseElev, baseElevSize, u, v);
+  }
+
+  function layerTileUvAtLocal(x, z, layer) {
+    if (!layer?.elev || !currentPatch || layer.originX == null) return null;
+    const focusPxX = currentPatch.focusDemPxX ?? currentPatch.patchPx / 2;
+    const focusPxY = currentPatch.focusDemPxY ?? currentPatch.patchPx / 2;
+    const terrainScale = 2 ** (TERRAIN_Z - layer.demZ);
+    const xPx = x / currentPatch.mpp + focusPxX;
+    const yPx = z / currentPatch.mpp + focusPxY;
+    const hTileX = (currentPatch.originX + xPx / TILE_SIZE) / terrainScale;
+    const hTileY = (currentPatch.originY + yPx / TILE_SIZE) / terrainScale;
+    const u = (hTileX - layer.originX) / layer.count;
+    const v = (hTileY - layer.originY) / layer.count;
+    if (u < 0 || u > 1 || v < 0 || v > 1) return null;
+    return { u, v };
+  }
+
+  function layerElevAbsoluteAtLocal(x, z, layer) {
+    const uv = layerTileUvAtLocal(x, z, layer);
+    if (!uv) return centreElevAtLocal(x, z);
+    return sampleElevation(layer.elev, layer.elevSize, uv.u, uv.v);
+  }
+
+  // ---------------------------------------------------------------------------
+  // TERRAIN BUILDER (Phase 1)
+  // One mesh: centre Z15 + one outer ring Z13 (~25 km), 50 m height blend.
+  // Local metres (x,z=0) = geometric patch centre. Inner aerial UV uses patch centre;
+  // outer ring aerial/heights keep focus-site origin (FPV viewshed / horizon relational).
+  // ---------------------------------------------------------------------------
+
+  function elevFromLayersUpTo(x, z, layerCount) {
+    let h = centreElevAtLocal(x, z);
+    const layers = terrainOuterRingLayers();
+    for (let i = 0; i < layerCount && i < layers.length; i++) {
+      const layer = layers[i];
+      const outside = ringOutsideDistanceM(x, z, layer.innerBoundaryHalfM);
+      const hSelf = layerElevAbsoluteAtLocal(x, z, layer);
+      const t = smoothstep(0, HORIZON_STITCH_WIDTH_M, outside);
+      h = lerp(h, hSelf, t);
+    }
+    return h;
+  }
+
+  function mergedTerrainHeightAt(x, z) {
+    const layers = terrainOuterRingLayers();
+    if (!layers.length) return centreElevAtLocal(x, z);
+    return elevFromLayersUpTo(x, z, layers.length);
+  }
+
+  function ringAerialSquareHalfM() {
+    const ring = terrainOuterRing;
+    if (!ring || !currentPatch) return TERRAIN_OUTER_EXTENT_M;
+    const lat = currentPatch.focus?.lat ?? currentFocus?.lat ?? DEFAULT_OBSERVER_LAT;
+    const mpp = ring.ringMpp ?? metersPerPixel(lat, ring.demZ);
+    const px = Math.max(1, ring.px || 1);
+    const focusPxX = ring.focusPxX ?? px / 2;
+    const focusPxY = ring.focusPxY ?? px / 2;
+    const marginPx = TILE_SIZE * 0.35;
+    const maxX = Math.max(0, Math.min(focusPxX - marginPx, px - focusPxX - marginPx)) * mpp;
+    const maxZ = Math.max(0, Math.min(focusPxY - marginPx, px - focusPxY - marginPx)) * mpp;
+    return Math.min(maxX, maxZ);
+  }
+
+  function outerAerialUvInsideAtLocal(x, z, epsilon = 0.002) {
+    const uv = outerAerialUvAtLocal(x, z);
+    return uv.u >= epsilon && uv.u <= 1 - epsilon && uv.v >= epsilon && uv.v <= 1 - epsilon;
+  }
+
+  function terrainMeshExtentHalfM() {
+    if (!currentPatch) return TERRAIN_OUTER_EXTENT_M;
+    const coreStep = currentPatch.patchMeters / terrainGridSize(currentPatch.count);
+    const outerStep = Math.max(120, coreStep * 3);
+    const ringHalf = ringAerialSquareHalfM();
+    const targetHalf = Math.min(TERRAIN_OUTER_EXTENT_M, ringHalf) - outerStep;
+    let extentHalf = Math.max(currentPatch.patchMeters / 2 + 50, targetHalf);
+    while (extentHalf > currentPatch.patchMeters / 2 + 50 && !outerAerialUvInsideAtLocal(extentHalf, extentHalf)) {
+      extentHalf -= outerStep;
+    }
+    return extentHalf;
+  }
+
+  function buildTerrainAxisLines(extentHalf) {
+    if (!currentPatch) return [0];
+    const coreHalf = currentPatch.patchMeters / 2;
+    const coreStep = currentPatch.patchMeters / terrainGridSize(currentPatch.count);
+    const outerStep = Math.max(120, coreStep * 3);
+    const stitch = HORIZON_STITCH_WIDTH_M;
+    const lines = new Set();
+
+    const addRange = (min, max, step) => {
+      if (max < min) return;
+      lines.add(Number(min.toFixed(3)));
+      lines.add(Number(max.toFixed(3)));
+      const start = Math.ceil(min / step) * step;
+      for (let v = start; v <= max + 1e-4; v += step) lines.add(Number(v.toFixed(3)));
+    };
+
+    addRange(-extentHalf, -coreHalf, outerStep);
+    addRange(coreHalf, extentHalf, outerStep);
+    addRange(-coreHalf, coreHalf, coreStep);
+    addRange(-coreHalf - stitch, coreHalf + stitch, Math.max(10, coreStep / 2));
+    lines.add(-extentHalf);
+    lines.add(extentHalf);
+    lines.add(-coreHalf);
+    lines.add(coreHalf);
+    lines.add(0);
+
+    return Array.from(lines).filter((v) => v >= -extentHalf && v <= extentHalf).sort((a, b) => a - b);
+  }
+
+  function highResAerialUvAtLocal(x, z) {
+    if (!currentPatch?.aerialCount) return { u: 0.5, v: 0.5 };
+    const demPx = localMetersToDemPx(x, z);
+    const xPx = demPx.x;
+    const yPx = demPx.y;
+    const aerialScale = 2 ** ((currentPatch.effectiveAerialZ ?? AERIAL_Z) - TERRAIN_Z);
+    const aerialTileX = (currentPatch.originX + xPx / TILE_SIZE) * aerialScale;
+    const aerialTileY = (currentPatch.originY + yPx / TILE_SIZE) * aerialScale;
+    const u = (aerialTileX - currentPatch.aerialOriginX) / currentPatch.aerialCount;
+    const v = (aerialTileY - currentPatch.aerialOriginY) / currentPatch.aerialCount;
+    return { u, v: 1 - v };
+  }
+
+  function outerAerialUvAtLocal(x, z) {
+    const ring = terrainOuterRing;
+    if (!ring) return highResAerialUvAtLocal(x, z);
+    const ringMpp = ring.ringMpp ?? metersPerPixel(currentPatch.focus?.lat ?? DEFAULT_OBSERVER_LAT, ring.demZ);
+    const pxX = (ring.focusPxX ?? ring.px / 2) + x / ringMpp;
+    const pxY = (ring.focusPxY ?? ring.px / 2) + z / ringMpp;
+    const u = pxX / ring.px;
+    const v = 1 - pxY / ring.px;
+    return { u, v };
+  }
+
+  function terrainUvsAtLocal(x, z) {
+    const hi = highResAerialUvAtLocal(x, z);
+    const outer = outerAerialUvAtLocal(x, z);
+    return { u: hi.u, v: hi.v, outerU: outer.u, outerV: outer.v };
+  }
+
+  function buildTerrainMeshGeometry(ve = effectiveVerticalExaggeration()) {
+    const extentHalf = terrainMeshExtentHalfM();
+    const xLines = buildTerrainAxisLines(extentHalf);
+    const zLines = buildTerrainAxisLines(extentHalf);
     const positions = [];
     const uvs = [];
+    const uvOuters = [];
     const indices = [];
-    const terrainScale = 2 ** (TERRAIN_Z - HORIZON_Z);
 
-    for (let iy = 0; iy <= segments; iy++) {
-      const fy = iy / segments;
-      for (let ix = 0; ix <= segments; ix++) {
-        const fx = ix / segments;
-        const terrainTileX = (horizonPatch.originX + fx * horizonPatch.count) * terrainScale;
-        const terrainTileY = (horizonPatch.originY + fy * horizonPatch.count) * terrainScale;
-        const xPx = (terrainTileX - currentPatch.originX) * TILE_SIZE;
-        const yPx = (terrainTileY - currentPatch.originY) * TILE_SIZE;
-        const x = (xPx - currentPatch.patchPx / 2) * currentPatch.mpp;
-        const z = (yPx - currentPatch.patchPx / 2) * currentPatch.mpp;
-        const h = sampleElevation(elev, elevSize, fx, fy);
-        positions.push(x, (h - centerElev) * verticalExaggeration - 1.2, z);
-        uvs.push(fx, 1 - fy);
+    for (let iz = 0; iz < zLines.length; iz++) {
+      const z = zLines[iz];
+      for (let ix = 0; ix < xLines.length; ix++) {
+        const x = xLines[ix];
+        const h = mergedTerrainHeightAt(x, z);
+        positions.push(x, (h - baseCenterElev) * ve, z);
+        const uv = terrainUvsAtLocal(x, z);
+        uvs.push(uv.u, uv.v);
+        uvOuters.push(uv.outerU, uv.outerV);
       }
     }
 
-    for (let iy = 0; iy < segments; iy++) {
-      for (let ix = 0; ix < segments; ix++) {
-        const a = iy * (segments + 1) + ix;
+    const rowStride = xLines.length;
+    for (let iz = 0; iz < zLines.length - 1; iz++) {
+      for (let ix = 0; ix < xLines.length - 1; ix++) {
+        const a = iz * rowStride + ix;
         const b = a + 1;
-        const c = a + (segments + 1);
+        const c = a + rowStride;
         const d = c + 1;
         indices.push(a, c, b, b, c, d);
       }
@@ -1799,26 +3636,107 @@
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
     geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+    geometry.setAttribute('uvOuter', new THREE.Float32BufferAttribute(uvOuters, 2));
     geometry.setIndex(indices);
     geometry.computeVertexNormals();
-
-    const mat = new THREE.MeshLambertMaterial({ map: texture, depthWrite: true });
-    horizonMesh = new THREE.Mesh(geometry, mat);
-    scene.add(horizonMesh);
-    if (terrainMesh) terrainMesh.renderOrder = 2;
+    return geometry;
   }
 
-  async function buildTerrain(focus) {
+  function applyTerrainMeshHeights(mesh, ve = effectiveVerticalExaggeration()) {
+    if (!mesh) return;
+    const pos = mesh.geometry.attributes.position;
+    for (let i = 0; i < pos.count; i++) {
+      const h = mergedTerrainHeightAt(pos.getX(i), pos.getZ(i));
+      pos.setY(i, (h - baseCenterElev) * ve);
+    }
+    pos.needsUpdate = true;
+    mesh.geometry.computeVertexNormals();
+    updateMaterialPaintRange(mesh);
+  }
+
+  function rebuildTerrainHeights() {
+    const ve = effectiveVerticalExaggeration();
+    if (terrainMesh && baseElev && currentPatch) {
+      applyTerrainMeshHeights(terrainMesh, ve);
+    }
+    addSiteMarker(currentPatch?.site);
+  }
+
+  function clearTerrainOuterRing() {
+    terrainOuterRing = null;
+    horizonPatchMeters = 0;
+  }
+
+  async function loadTerrainOuterRingPack(focus, cfg, aerialTemplate, useRelief) {
+    const tile = lonLatToTile(focus.lng, focus.lat, cfg.demZ);
+    const count = cfg.tileRadius * 2 + 1;
+    const originX = Math.floor(tile.x) - cfg.tileRadius;
+    const originY = Math.floor(tile.y) - cfg.tileRadius;
+    const demCanvas = await drawTileMosaic(TERRARIUM_URL, cfg.demZ, originX, originY, count, { read: true, required: true });
+    const px = count * TILE_SIZE;
+    const mppSkirt = metersPerPixel(focus.lat, cfg.demZ);
+    let aerialCanvas;
+    if (useRelief) {
+      const elevTmp = decodeTerrariumCanvas(demCanvas);
+      aerialCanvas = buildTerrainReliefCanvas(elevTmp, px, mppSkirt);
+    } else {
+      const aerialScale = 2 ** (cfg.aerialZ - cfg.demZ);
+      const aerialOriginX = originX * aerialScale;
+      const aerialOriginY = originY * aerialScale;
+      const aerialCount = count * aerialScale;
+      try {
+        aerialCanvas = await drawTileMosaic(aerialTemplate, cfg.aerialZ, aerialOriginX, aerialOriginY, aerialCount, { required: true });
+      } catch (_) {
+        aerialCanvas = await drawTileMosaic(ESRI_CLARITY_URL, cfg.aerialZ, aerialOriginX, aerialOriginY, aerialCount, { required: true });
+      }
+    }
+    const centerU = ((tile.x - originX) * TILE_SIZE) / px;
+    const centerV = ((tile.y - originY) * TILE_SIZE) / px;
+    const elev = decodeTerrariumCanvas(demCanvas);
+    const centerElev = sampleElevation(elev, px, centerU, centerV);
+    const focusPxX = (tile.x - originX) * TILE_SIZE;
+    const focusPxY = (tile.y - originY) * TILE_SIZE;
+    return {
+      demZ: cfg.demZ,
+      innerBoundaryHalfM: cfg.innerBoundaryHalfM,
+      extentRadiusM: cfg.extentRadiusM,
+      originX,
+      originY,
+      count,
+      px,
+      meters: px * mppSkirt,
+      ringMpp: mppSkirt,
+      focusPxX,
+      focusPxY,
+      elev,
+      elevSize: px,
+      centerElev,
+      aerialCanvas,
+      demCanvas
+    };
+  }
+
+  async function buildTerrain(focus, options = {}) {
+    const skipMonumentLoad = !!options.skipMonumentLoad;
     const token = ++loadingToken;
+    const focusObserver = { lat: Number(focus.lat), lng: Number(focus.lng) };
+    if (!horizonCacheValidForObserver(focusObserver)) {
+      clearViewshedHorizon();
+    } else {
+      cancelViewshedHorizonCompute();
+    }
+    clearTerrainOuterRing();
 
     const centerTile = lonLatToTile(focus.lng, focus.lat, TERRAIN_Z);
     const count = terrainTileCount();
-    const grid = terrainGridSize(count);
     const effectiveAerialZ = aerialZoomForTileCount(count);
-    els.nmsStatus.textContent = `Loading ${demAreaKey === 'double' ? 'double' : 'standard'} high-res DEM area (${count}x${count} Z${TERRAIN_Z} DEM, Z${effectiveAerialZ} aerial)...`;
+    const aerialTemplate = imageryKey === 'esri-clarity' ? ESRI_CLARITY_URL : GOOGLE_AERIAL_URL;
+    const useRelief = imageryKey === 'terrain';
+    const outerKm = Math.round(TERRAIN_OUTER_EXTENT_M / 1000);
+    els.nmsStatus.textContent = `Loading ${demAreaKey === 'double' ? 'double' : 'standard'} high-res DEM (Z${TERRAIN_Z}) + outer ring Z${TERRAIN_OUTER_Z} (~${outerKm} km)…`;
     if (!siteDemReady) {
       setStageLoadingText(els.nmsStatus.textContent);
-      setStageLoadingProgress(0.05, { cap: 0.18 });
+      setStageLoadingProgress(0.05, { cap: 0.22 });
     }
     const originX = Math.floor(centerTile.x - count / 2);
     const originY = Math.floor(centerTile.y - count / 2);
@@ -1826,45 +3744,13 @@
     const mpp = metersPerPixel(focus.lat, TERRAIN_Z);
     const patchMeters = patchPx * mpp;
 
-    const aerialTemplate = imageryKey === 'esri-clarity' ? ESRI_CLARITY_URL : GOOGLE_AERIAL_URL;
-    if (!siteDemReady) setStageLoadingProgress(0.10, { cap: 0.22 });
-    const demCanvas = await drawTileMosaic(TERRARIUM_URL, TERRAIN_Z, originX, originY, count, { read: true, required: true });
-    let aerialCanvas = null;
-    let horizonCanvas = null;
-    let horizonDemCanvas = null;
-    let horizonTile = null;
-    let horizonCount = HORIZON_TILE_RADIUS * 2 + 1;
-    let horizonOriginX = null;
-    let horizonOriginY = null;
-    let horizonAerialOriginX = null;
-    let horizonAerialOriginY = null;
-    let horizonAerialCount = null;
-    try {
-      horizonTile = lonLatToTile(focus.lng, focus.lat, HORIZON_Z);
-      horizonOriginX = Math.floor(horizonTile.x) - HORIZON_TILE_RADIUS;
-      horizonOriginY = Math.floor(horizonTile.y) - HORIZON_TILE_RADIUS;
-      const horizonAerialScale = 2 ** (HORIZON_AERIAL_Z - HORIZON_Z);
-      horizonAerialOriginX = horizonOriginX * horizonAerialScale;
-      horizonAerialOriginY = horizonOriginY * horizonAerialScale;
-      horizonAerialCount = horizonCount * horizonAerialScale;
-      horizonDemCanvas = await drawTileMosaic(TERRARIUM_URL, HORIZON_Z, horizonOriginX, horizonOriginY, horizonCount, { read: true, required: true });
-    } catch (_) {
-      horizonTile = lonLatToTile(focus.lng, focus.lat, HORIZON_Z);
-      horizonOriginX = Math.floor(horizonTile.x) - HORIZON_TILE_RADIUS;
-      horizonOriginY = Math.floor(horizonTile.y) - HORIZON_TILE_RADIUS;
-      const horizonAerialScale = 2 ** (HORIZON_AERIAL_Z - HORIZON_Z);
-      horizonAerialOriginX = horizonOriginX * horizonAerialScale;
-      horizonAerialOriginY = horizonOriginY * horizonAerialScale;
-      horizonAerialCount = horizonCount * horizonAerialScale;
-      horizonDemCanvas = await drawTileMosaic(TERRARIUM_URL, HORIZON_Z, horizonOriginX, horizonOriginY, horizonCount, { read: true, required: true });
-    }
+    const outerRingConfig = buildTerrainOuterRingConfig(focus.lat);
+    const outerRingPromise = loadTerrainOuterRingPack(focus, outerRingConfig, aerialTemplate, useRelief);
 
+    if (!siteDemReady) setStageLoadingProgress(0.08, { cap: 0.24 });
+    const demCanvas = await drawTileMosaic(TERRARIUM_URL, TERRAIN_Z, originX, originY, count, { read: true, required: true });
     if (token !== loadingToken) return;
 
-    if (!siteDemReady) {
-      setStageLoadingText('Building terrain mesh…');
-      setStageLoadingProgress(0.26, { cap: 0.42 });
-    }
     const elev = decodeTerrariumCanvas(demCanvas);
     baseElev = elev;
     baseElevSize = patchPx;
@@ -1876,104 +3762,117 @@
     const centerElev = sampleElevation(elev, patchPx, centerU, centerV);
     baseCenterElev = centerElev;
 
-    if (imageryKey === 'terrain') {
-      if (!siteDemReady) setStageLoadingProgress(0.44, { cap: 0.58 });
+    let aerialCanvas = null;
+    let aerialOriginX = originX;
+    let aerialOriginY = originY;
+    let aerialCount = count;
+    if (useRelief) {
       aerialCanvas = buildTerrainReliefCanvas(elev, patchPx, mpp);
-      const hElevTmp = decodeTerrariumCanvas(horizonDemCanvas);
-      const horizonPxTmp = horizonCount * TILE_SIZE;
-      const hCenterU = ((horizonTile.x - horizonOriginX) * TILE_SIZE) / horizonPxTmp;
-      const hCenterV = ((horizonTile.y - horizonOriginY) * TILE_SIZE) / horizonPxTmp;
-      const hCenterElevTmp = sampleElevation(hElevTmp, horizonPxTmp, hCenterU, hCenterV);
-      horizonCanvas = buildTerrainReliefCanvas(hElevTmp, horizonPxTmp, metersPerPixel(focus.lat, HORIZON_Z));
-      // Keep these for the skirt mesh later.
-      horizonDemCanvas = horizonDemCanvas;
     } else {
       if (!siteDemReady) {
         setStageLoadingText('Loading imagery…');
         setStageLoadingProgress(0.46, { cap: 0.70 });
       }
       const aerialScale = 2 ** (effectiveAerialZ - TERRAIN_Z);
-      const aerialOriginX = originX * aerialScale;
-      const aerialOriginY = originY * aerialScale;
-      const aerialCount = count * aerialScale;
+      const aerialMarginTiles = Math.max(1, Math.ceil(HORIZON_AERIAL_OVERLAP_M / (TILE_SIZE * metersPerPixel(focus.lat, effectiveAerialZ))));
+      aerialOriginX = originX * aerialScale - aerialMarginTiles;
+      aerialOriginY = originY * aerialScale - aerialMarginTiles;
+      aerialCount = count * aerialScale + aerialMarginTiles * 2;
       try {
         aerialCanvas = await drawTileMosaic(aerialTemplate, effectiveAerialZ, aerialOriginX, aerialOriginY, aerialCount, { required: true });
       } catch (e) {
-        // Google tiles can be CORS-hostile in some browser states; keep the terrain usable with Esri texture.
         aerialCanvas = await drawTileMosaic(ESRI_CLARITY_URL, effectiveAerialZ, aerialOriginX, aerialOriginY, aerialCount, { required: true });
         els.nmsStatus.textContent = 'Google texture failed; displayed Esri Clarity texture for WebGL terrain.';
         if (!siteDemReady) setStageLoadingText(els.nmsStatus.textContent);
       }
-      try {
-        horizonCanvas = await drawTileMosaic(aerialTemplate, HORIZON_AERIAL_Z, horizonAerialOriginX, horizonAerialOriginY, horizonAerialCount, { required: true });
-      } catch (_) {
-        horizonCanvas = await drawTileMosaic(ESRI_CLARITY_URL, HORIZON_AERIAL_Z, horizonAerialOriginX, horizonAerialOriginY, horizonAerialCount, { required: true });
-      }
+      aerialCanvas = downscaleCanvasIfNeeded(aerialCanvas, renderer.capabilities.maxTextureSize);
     }
 
+    terrainOuterRing = await outerRingPromise;
+    if (token !== loadingToken) return;
+
+    horizonPatchMeters = terrainOuterRing?.meters || 0;
+
     if (!siteDemReady) {
-      setStageLoadingText('Finalising…');
+      setStageLoadingText('Building terrain mesh…');
       setStageLoadingProgress(0.72, { cap: 0.92 });
     }
-    const geometry = new THREE.PlaneGeometry(patchMeters, patchMeters, grid, grid);
-    geometry.rotateX(-Math.PI / 2);
+
+    clearLabels();
+    currentPatch = {
+      site: selectedSite || focus,
+      focus: { lat: focus.lat, lng: focus.lng },
+      originX,
+      originY,
+      count,
+      patchPx,
+      patchMeters,
+      mpp,
+      centerTile,
+      centerElev,
+      focusDemPxX: centerPxX,
+      focusDemPxY: centerPxY,
+      effectiveAerialZ,
+      aerialOriginX,
+      aerialOriginY,
+      aerialCount
+    };
+
+    const textureCanvas = aerialCanvas;
 
     if (terrainMesh) {
       scene.remove(terrainMesh);
       terrainMesh.geometry.dispose();
-      terrainMesh.material.map?.dispose?.();
       terrainMesh.material.dispose();
     }
+    disposeAerialTextures();
 
-    aerialTexture = new THREE.CanvasTexture(aerialCanvas);
-    aerialTexture.colorSpace = THREE.SRGBColorSpace;
-    aerialTexture.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+    aerialTexture = configureTerrainTexture(new THREE.CanvasTexture(textureCanvas));
+    if (!useRelief && terrainOuterRing?.aerialCanvas) {
+      const outerCanvas = downscaleCanvasIfNeeded(terrainOuterRing.aerialCanvas, renderer.capabilities.maxTextureSize);
+      aerialTextureOuter = configureTerrainTexture(new THREE.CanvasTexture(outerCanvas));
+    }
 
-    terrainMesh = new THREE.Mesh(geometry, new THREE.MeshLambertMaterial({ map: aerialTexture }));
-    applyUvSampledHeights(terrainMesh, elev, patchPx, centerElev, verticalExaggeration);
+    const terrainMaterial = new THREE.MeshLambertMaterial({ map: aerialTexture });
+    terrainMaterial.userData.terrainAerial = !useRelief;
+    applyDisplayMaterial(terrainMaterial);
+    const geometry = buildTerrainMeshGeometry(effectiveVerticalExaggeration());
+    terrainMesh = new THREE.Mesh(geometry, terrainMaterial);
+    updateMaterialPaintRange(terrainMesh);
     terrainMesh.receiveShadow = true;
+    terrainMesh.renderOrder = 2;
+    terrainMesh.frustumCulled = false;
     scene.add(terrainMesh);
 
-    if (!siteDemReady) setStageLoadingProgress(0.88, { cap: 0.97 });
-    // Reset label layer each build: selected label always shown; related labels optional.
-    clearLabels();
-
-    currentPatch = { site: selectedSite || focus, focus: { lat: focus.lat, lng: focus.lng }, originX, originY, count, patchPx, patchMeters, mpp, centerTile, centerElev };
-    if (horizonCanvas) {
-      const horizonTexture = new THREE.CanvasTexture(horizonCanvas);
-      horizonTexture.colorSpace = THREE.SRGBColorSpace;
-      horizonTexture.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
-      const hElev = decodeTerrariumCanvas(horizonDemCanvas);
-      const horizonPx = horizonCount * TILE_SIZE;
-      const hCenterU = ((horizonTile.x - horizonOriginX) * TILE_SIZE) / horizonPx;
-      const hCenterV = ((horizonTile.y - horizonOriginY) * TILE_SIZE) / horizonPx;
-      const hCenterElev = sampleElevation(hElev, horizonPx, hCenterU, hCenterV);
-      const horizonMeters = horizonCount * TILE_SIZE * metersPerPixel(focus.lat, HORIZON_Z);
-      addHorizonSkirt(horizonTexture, hElev, horizonPx, hCenterElev, {
-        originX: horizonOriginX,
-        originY: horizonOriginY,
-        count: horizonCount,
-        meters: horizonMeters
-      });
-    }
     addSiteMarker(selectedSite || focus);
     if (!siteDemReady) setStageLoadingProgress(0.92, { cap: 0.99 });
-    // Ensure Notes "More" is enabled for the current site,
-    // and ensure exactly one label is highlighted by default.
     const selectedLabel = labelItems.find(x => x.id === 'selected-site');
     if (selectedLabel) {
       notesActionItem = { id: selectedLabel.id, local: selectedLabel.local, lat: selectedLabel.lat, lng: selectedLabel.lng, props: selectedLabel.props, text: markerLabelText(selectedLabel.props || {}), detail: markerLabelDetail(selectedLabel.props || {}), el: selectedLabel.el };
       setActiveLabelById(selectedLabel.id);
     }
     updateNotesActions();
-    if (showRelatedMonuments) await addNmsMarkers();
-    if (showAllRelational) await loadRelationalMarkersInView();
-    if (showAllMonuments) await loadAllMonumentMarkersInView();
-    if (showAllLabels) rebuildAllLabelsFromShownMarkers();
+    if (!skipMonumentLoad) {
+      if (showRelatedMonuments) await addNmsMarkers();
+      if (showAllRelational) await loadRelationalMarkersInView();
+      if (showAllMonuments) await loadAllMonumentMarkersInView();
+      if (showHorizonRelational) await loadHorizonRelationalMarkers();
+      if (showAllLabels) rebuildAllLabelsFromShownMarkers();
+    }
     updateFocusTarget();
     updateCamera();
-    els.nmsStatus.textContent = `3D terrain loaded. High-res DEM area: ${count}x${count} tiles (${Math.round(patchMeters)} m wide).`;
+    els.nmsStatus.textContent = `3D terrain loaded. Single mesh: Z${TERRAIN_Z} centre + Z${TERRAIN_OUTER_Z} outer (~${outerKm} km).`;
     if (!siteDemReady) setStageLoadingProgress(1, { cap: 1 });
+    syncTerrainViewAstroUi();
+    purgeViewshedVisualsUnlessPanorama();
+    if (cameraState.observerMode) {
+      if (viewshedHorizonData?.length && viewshedHorizonObserver) {
+        applyViewshedHorizonVisuals(viewshedHorizonData, viewshedHorizonObserver, viewshedObserverH);
+      } else {
+        scheduleViewshedHorizonBackground(null, false);
+      }
+    }
+    applyDisplaySettings();
   }
 
   function localFromLonLat(lng, lat) {
@@ -1994,41 +3893,28 @@
     return { x, z };
   }
 
+  function patchCenterDemPx(patch = currentPatch) {
+    const px = patch?.patchPx ?? 0;
+    return { x: px / 2, y: px / 2 };
+  }
+
+  function localMetersToDemPx(x, z, patch = currentPatch) {
+    const center = patchCenterDemPx(patch);
+    const mpp = patch?.mpp ?? 1;
+    return { x: x / mpp + center.x, y: z / mpp + center.y };
+  }
+
   function terrainYAtLocal(x, z) {
     if (!terrainMesh || !currentPatch || !baseElev) return 0;
-    const u = (x / currentPatch.patchMeters) + 0.5;
-    const v = (z / currentPatch.patchMeters) + 0.5;
-    const h = sampleElevation(baseElev, baseElevSize, u, v);
-    return (h - baseCenterElev) * verticalExaggeration;
+    const h = mergedTerrainHeightAt(x, z);
+    return (h - baseCenterElev) * effectiveVerticalExaggeration();
   }
 
   function horizonYAtLocal(x, z) {
-    if (!horizonMesh || !currentPatch || !horizonElev || !horizonPatchCount || horizonPatchOriginX == null) return null;
-    const terrainScale = 2 ** (TERRAIN_Z - HORIZON_Z);
-
-    // Invert local->terrain tile transform used in addHorizonSkirt.
-    const xPx = x / currentPatch.mpp + currentPatch.patchPx / 2;
-    const yPx = z / currentPatch.mpp + currentPatch.patchPx / 2;
-    const terrainTileX = currentPatch.originX + (xPx / TILE_SIZE);
-    const terrainTileY = currentPatch.originY + (yPx / TILE_SIZE);
-    const hTileX = terrainTileX / terrainScale;
-    const hTileY = terrainTileY / terrainScale;
-    const u = (hTileX - horizonPatchOriginX) / horizonPatchCount;
-    const v = (hTileY - horizonPatchOriginY) / horizonPatchCount;
-
-    // Only trust horizon sampling when actually within the horizon patch envelope.
-    if (u < 0 || u > 1 || v < 0 || v > 1) return null;
-    const h = sampleElevation(horizonElev, horizonElevSize, u, v);
-    return (h - horizonCenterElev) * verticalExaggeration - 1.2;
+    return terrainYAtLocal(x, z);
   }
 
   function groundYAtLocal(x, z) {
-    if (!currentPatch) return 0;
-    const half = (currentPatch.patchMeters || 0) / 2;
-    const inMain = Math.abs(x) <= half && Math.abs(z) <= half;
-    if (inMain) return terrainYAtLocal(x, z);
-    const hy = horizonYAtLocal(x, z);
-    if (hy != null) return hy;
     return terrainYAtLocal(x, z);
   }
 
@@ -2042,13 +3928,18 @@
       cameraState.target.set(0, 80, 0);
       return;
     }
-    const inside = Math.abs(local.x) <= currentPatch.patchMeters / 2 && Math.abs(local.z) <= currentPatch.patchMeters / 2;
-    cameraState.target.set(local.x, (inside ? terrainYAtLocal(local.x, local.z) : 0) + 80, local.z);
+    cameraState.target.set(local.x, terrainYAtLocal(local.x, local.z) + 80, local.z);
+  }
+
+  function observerFocusCoords() {
+    if (cameraState.observerMode && panoramaObserverFocus) return panoramaObserverFocus;
+    return currentFocus;
   }
 
   function observerCameraLocal() {
-    if (!cameraState.observerMode || !currentFocus || !currentPatch) return null;
-    const local = localFromLonLatUnbounded(currentFocus.lng, currentFocus.lat);
+    const focus = observerFocusCoords();
+    if (!cameraState.observerMode || !focus || !currentPatch) return null;
+    const local = localFromLonLatUnbounded(focus.lng, focus.lat);
     if (!local) return null;
     const inside = Math.abs(local.x) <= currentPatch.patchMeters / 2 && Math.abs(local.z) <= currentPatch.patchMeters / 2;
     const groundY = inside ? terrainYAtLocal(local.x, local.z) : 0;
@@ -2064,11 +3955,11 @@
   function updateObserverStatus() {
     if (!els.observerStatus) return;
     const observer = observerCameraLocal();
-    if (!observer || !currentFocus) {
+    if (!observer || !focus) {
       els.observerStatus.textContent = 'Observer camera not positioned yet.';
       return;
     }
-    els.observerStatus.textContent = `Camera at ${Number(currentFocus.lat).toFixed(6)}, ${Number(currentFocus.lng).toFixed(6)}; terrain ${(observer.groundY / Math.max(verticalExaggeration, 0.0001) + (baseCenterElev || 0)).toFixed(2)}m, camera Y ${observer.y.toFixed(2)}m.`;
+    els.observerStatus.textContent = `Camera at ${Number(focus.lat).toFixed(6)}, ${Number(focus.lng).toFixed(6)}; terrain ${(observer.groundY / Math.max(verticalExaggeration, 0.0001) + (baseCenterElev || 0)).toFixed(2)}m, camera Y ${observer.y.toFixed(2)}m.`;
   }
 
   function scheduleTerrainReloadIfNeeded(force = false) {
@@ -2088,15 +3979,17 @@
   }
 
   function moveFocus(forwardM, rightM) {
+    if (cameraState.observerMode) return;
     if (!currentFocus) return;
     const b = THREE.MathUtils.degToRad(cameraState.bearing);
-    const eastM = (-Math.sin(b) * forwardM) + (Math.cos(b) * rightM);
-    const northM = (Math.cos(b) * forwardM) + (Math.sin(b) * rightM);
+    const eastM = (Math.sin(b) * forwardM) + (Math.cos(b) * rightM);
+    const northM = (Math.cos(b) * forwardM) - (Math.sin(b) * rightM);
     currentFocus = offsetLonLat(currentFocus.lat, currentFocus.lng, eastM, northM);
     updateFocusTarget();
     updateCamera();
     updateNotesPanel();
     scheduleTerrainReloadIfNeeded(false);
+    if (cameraState.observerMode) scheduleViewshedHorizonIfMoved();
   }
 
   function cameraStepMeters(multiplier = 1) {
@@ -2107,7 +4000,34 @@
     return cameraState.observerMode ? 0 : 8;
   }
 
+  function clampObserverFov(fov) {
+    return Math.max(OBSERVER_FOV_MIN, Math.min(OBSERVER_FOV_MAX, Number(fov) || OBSERVER_FOV_DEFAULT));
+  }
+
+  function observerZoomFactor() {
+    return OBSERVER_FOV_DEFAULT / clampObserverFov(cameraState.fov);
+  }
+
+  function observerZoomReadout() {
+    const factor = observerZoomFactor();
+    const fov = Math.round(clampObserverFov(cameraState.fov));
+    if (factor >= 9.95) return `${fov}° · ${Math.round(factor)}×`;
+    if (factor >= 1.95) return `${fov}° · ${factor.toFixed(1)}×`;
+    return `${fov}° · ${factor.toFixed(2)}×`;
+  }
+
+  function applyObserverFovZoom(factor) {
+    if (!Number.isFinite(factor) || factor <= 0) return;
+    cameraState.fov = clampObserverFov(cameraState.fov * factor);
+  }
+
+  function syncCameraProjection(useObserverFov) {
+    camera.fov = useObserverFov ? clampObserverFov(cameraState.fov) : ORBIT_CAMERA_FOV;
+    camera.updateProjectionMatrix();
+  }
+
   function applyCameraAction(action, dtSeconds = 1 / 60, holdSeconds = 0) {
+    if (cameraState.observerMode && FPV_LOCKED_MOVE_ACTIONS.has(action)) return;
     const dt = Math.max(0.001, Math.min(0.08, Number(dtSeconds) || 1 / 60));
     const accel = Math.min(2.8, 1 + Math.max(0, holdSeconds - 0.35) * 1.6);
     const moveM = cameraStepMeters(dt * accel);
@@ -2117,13 +4037,17 @@
     let movedFocus = false;
 
     if (action === 'zoom-in') {
-      cameraState.distance = Math.max(380, cameraState.distance / (1 + zoomRate));
-      if (cameraState.distance < 1100) {
-        moveFocus(Math.max(18, cameraState.distance * 0.035 * accel), 0);
-        return;
+      if (cameraState.observerMode) {
+        applyObserverFovZoom(1 / (1 + zoomRate));
+      } else {
+        cameraState.distance = Math.max(380, cameraState.distance / (1 + zoomRate));
       }
     } else if (action === 'zoom-out') {
-      cameraState.distance = Math.min(6500, cameraState.distance * (1 + zoomRate));
+      if (cameraState.observerMode) {
+        applyObserverFovZoom(1 + zoomRate);
+      } else {
+        cameraState.distance = Math.min(6500, cameraState.distance * (1 + zoomRate));
+      }
     } else if (action === 'move-forward') {
       moveFocus(moveM, 0);
       movedFocus = true;
@@ -2244,8 +4168,1250 @@
     allMonumentMarkers = [];
   }
 
+  function notifyViewshedHorizonReady() {
+    const waiters = viewshedHorizonWaiters.splice(0);
+    for (const fn of waiters) {
+      try { fn(); } catch (e) { console.warn('[viewshed] waiter failed', e); }
+    }
+  }
+
+  function waitForViewshedHorizonReady(observer, resKey = null, timeoutMs = 900000) {
+    if (horizonCacheValidForObserver(observer, resKey)) return Promise.resolve(true);
+    return new Promise((resolve, reject) => {
+      const timer = window.setTimeout(() => {
+        const idx = viewshedHorizonWaiters.indexOf(done);
+        if (idx >= 0) viewshedHorizonWaiters.splice(idx, 1);
+        reject(new Error('Viewshed horizon timed out'));
+      }, timeoutMs);
+      const done = () => {
+        window.clearTimeout(timer);
+        resolve(horizonCacheValidForObserver(observer, resKey));
+      };
+      viewshedHorizonWaiters.push(done);
+    });
+  }
+
+  function horizonQueryEnvelope() {
+    const observer = getHorizonObserverFocus();
+    if (!observer) return null;
+    const r = VIEWSHED_SCAN_RADIUS_KM * 1000;
+    const nw = offsetLonLat(observer.lat, observer.lng, -r, r);
+    const se = offsetLonLat(observer.lat, observer.lng, r, -r);
+    return { nw, se };
+  }
+
+  function relationalMonumentsForHorizonWorker(features) {
+    const out = [];
+    const selectedSmr = normSmr(selectedSite?.smr || '');
+    for (const f of features) {
+      const g = f?.geometry;
+      const a = f?.attributes || {};
+      if (!g || !isFinite(g.y) || !isFinite(g.x)) continue;
+      if (!selectedMonumentClasses.has(String(a.MONUMENT_CLASS || '').trim())) continue;
+      const thisSmr = normSmr(a.SMRS || '');
+      if (selectedSmr && thisSmr && thisSmr === selectedSmr) continue;
+      if (selectedSite && isFinite(selectedSite.lat) && isFinite(selectedSite.lng)) {
+        if (distanceMeters(selectedSite.lat, selectedSite.lng, g.y, g.x) < 6) continue;
+      }
+      out.push({ lat: g.y, lng: g.x, props: a });
+    }
+    return out;
+  }
+
+  function bearingDegFromObserver(obsLat, obsLng, lat, lng) {
+    const φ1 = THREE.MathUtils.degToRad(obsLat);
+    const φ2 = THREE.MathUtils.degToRad(lat);
+    const Δλ = THREE.MathUtils.degToRad(lng - obsLng);
+    const y = Math.sin(Δλ) * Math.cos(φ2);
+    const x = Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ);
+    return ((THREE.MathUtils.radToDeg(Math.atan2(y, x)) % 360) + 360) % 360;
+  }
+
+  function shortestHorizonAzDiffDeg(a, b) {
+    return Math.abs(((Number(a) - Number(b) + 540) % 360) - 180);
+  }
+
+  async function matchHorizonMonumentsInWorker(observer, horizonData, monuments, resKey, matchToken, onProgress) {
+    const worker = ensureHorizonWorker(false);
+    if (!worker) throw new Error('Horizon worker unavailable');
+    if (!isFinite(viewshedObserverH)) throw new Error('Viewshed observer height not ready.');
+    const token = matchToken ?? horizonLoadToken;
+    return new Promise((resolve, reject) => {
+      const onMessage = (ev) => {
+        if (ev.data?.token !== token) return;
+        const msg = ev.data || {};
+        if (msg.type === 'PROGRESS') {
+          const done = Number(msg.payload?.done) || 0;
+          const total = Math.max(1, Number(msg.payload?.total) || 1);
+          const message = msg.payload?.message || 'Matching monuments to horizon…';
+          const pct = 0.45 + (done / total) * 0.48;
+          onProgress?.(message, pct);
+          return;
+        }
+        if (msg.type === 'MATCH_RESULT') {
+          worker.removeEventListener('message', onMessage);
+          resolve(msg.payload);
+        }
+        if (msg.type === 'ERROR') {
+          worker.removeEventListener('message', onMessage);
+          reject(new Error(msg.payload?.message || 'Horizon match failed'));
+        }
+      };
+      worker.addEventListener('message', onMessage);
+      worker.postMessage({
+        type: 'MATCH_HORIZON_MONUMENTS',
+        token,
+        payload: {
+          lat: observer.lat,
+          lon: observer.lng,
+          observerH: viewshedObserverH,
+          horizonData,
+          monuments,
+          floatM: horizonFloatM,
+          azClusterDeg: horizonAzClusterDeg,
+          resKey: normalizeHorizonResKey(resKey)
+        }
+      });
+    });
+  }
+
+  function clearHorizonMemberMarkers(clusterId = null) {
+    const keep = [];
+    for (const m of horizonMemberMarkers) {
+      if (!clusterId || m.clusterId === clusterId) {
+        m.el?.remove();
+      } else {
+        keep.push(m);
+      }
+    }
+    horizonMemberMarkers = keep;
+    const keepLabels = [];
+    for (const item of labelItems) {
+      if (item.kind === 'horizonMember' && (!clusterId || String(item.id).includes(clusterId))) {
+        item.el?.remove();
+        item.line?.remove();
+      } else {
+        keepLabels.push(item);
+      }
+    }
+    labelItems = keepLabels;
+  }
+
+  function clearHorizonClusterMarkers() {
+    for (const m of horizonClusterMarkers) m.el?.remove();
+    horizonClusterMarkers = [];
+    horizonClusters = [];
+    horizonExpandedClusters = new Set();
+    clearHorizonMemberMarkers();
+    clearLabelsByKind('horizon');
+    clearLabelsByKind('horizonMember');
+  }
+
+  function clearHorizonRelationalMarkers() {
+    clearHorizonClusterMarkers();
+  }
+
+  function findHorizonCluster(clusterId) {
+    return horizonClusters.find((c) => c.id === clusterId) || null;
+  }
+
+  function horizonClusterLabelId(clusterId) {
+    return `hz-label-${clusterId}`;
+  }
+
+  function horizonMemberMarkerId(clusterId, props, lng, lat) {
+    return `hz-mem-${clusterId}-${monumentStableKey(props, lng, lat)}`;
+  }
+
+  function horizonClusterTitle(cluster) {
+    const members = Array.isArray(cluster?.members) ? cluster.members : [];
+    if (members.length === 1) {
+      return markerLabelText(members[0]?.props || {});
+    }
+    const n = Number(cluster?.count) || members.length;
+    return `${n} sites on horizon`;
+  }
+
+  function horizonClusterDetail(cluster) {
+    const members = Array.isArray(cluster?.members) ? cluster.members : [];
+    if (members.length <= 1) {
+      return markerLabelDetail(members[0]?.props || {});
+    }
+    return '';
+  }
+
+  function setHorizonClusterLabelExpanded(clusterId, expanded) {
+    const labelId = horizonClusterLabelId(clusterId);
+    const item = labelItems.find((x) => x.id === labelId);
+    if (!item?.el) return;
+    const btn = item.el.querySelector('.label-expand-btn');
+    if (!btn) return;
+    btn.setAttribute('aria-pressed', expanded ? 'true' : 'false');
+    btn.title = expanded ? 'Collapse All' : 'Expand All';
+    btn.setAttribute('aria-label', expanded ? 'Collapse All' : 'Expand All');
+  }
+
+  function expandHorizonCluster(clusterId) {
+    const cluster = findHorizonCluster(clusterId);
+    if (!cluster) return;
+    horizonExpandedClusters.add(clusterId);
+    const members = Array.isArray(cluster.members) ? cluster.members : [];
+    for (const mem of members) {
+      const lat = Number(mem?.lat);
+      const lng = Number(mem?.lng);
+      const props = mem?.props || {};
+      if (!isFinite(lat) || !isFinite(lng)) continue;
+      const local = localFromLonLatUnbounded(lng, lat);
+      if (!local) continue;
+      const markerId = horizonMemberMarkerId(clusterId, props, lng, lat);
+      if (horizonMemberMarkers.some((m) => m.id === markerId)) continue;
+      const azimuth = Number(mem?.azimuth);
+      const altitude = Number(mem?.altitude);
+      const distM = Number(mem?.distM);
+      if (!isFinite(azimuth) || !isFinite(altitude)) continue;
+
+      const mClass = props.MONUMENT_CLASS || '';
+      const el = document.createElement('div');
+      el.className = 'rel-marker rel-marker--horizon-member';
+      el.title = String(mClass || 'Monument');
+      el.innerHTML = '<span class="megicon"></span>';
+      renderMegIconInto(el.querySelector('.megicon'), mClass, TOUR_MARKER_ICON_SIZE);
+      el.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        if (!showHorizonRelational) return;
+        const labelId = `hz-mem-label-${markerId}`;
+        if (hasLabel(labelId)) {
+          removeFlatLabel(labelId);
+          return;
+        }
+        addHorizonSiteLabel({
+          id: labelId,
+          kind: 'horizonMember',
+          lat,
+          lng,
+          props,
+          azimuth,
+          altitude,
+          distM,
+          text: markerLabelText(props),
+          detail: markerLabelDetail(props)
+        });
+      });
+      els.markerLayer?.appendChild(el);
+      horizonMemberMarkers.push({
+        id: markerId, clusterId, el, local, lat, lng, props, azimuth, altitude, distM
+      });
+    }
+    setHorizonClusterLabelExpanded(clusterId, true);
+  }
+
+  function collapseHorizonCluster(clusterId) {
+    horizonExpandedClusters.delete(clusterId);
+    clearHorizonMemberMarkers(clusterId);
+    setHorizonClusterLabelExpanded(clusterId, false);
+  }
+
+  function toggleHorizonClusterExpanded(clusterId) {
+    if (horizonExpandedClusters.has(clusterId)) collapseHorizonCluster(clusterId);
+    else expandHorizonCluster(clusterId);
+  }
+
+  function addHorizonSiteLabel({ id, kind, lat, lng, props, azimuth, altitude, distM, text, detail, clusterId = null }) {
+    if (hasLabel(id)) return;
+    const local = localFromLonLatUnbounded(lng, lat);
+    const el = document.createElement('div');
+    el.className = 'site-label nms';
+    const az = Number(azimuth);
+    const alt = Number(altitude);
+    const meta = (isFinite(az) && isFinite(alt))
+      ? `Az ${az.toFixed(1)}° · Alt ${alt.toFixed(2)}°`
+      : '';
+    el.innerHTML = `<span class="label-title">${escapeHtml(text || 'SMR')}</span>`
+      + `<span class="detail">${escapeHtml(detail || meta)}</span>`;
+    el.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      if (activeLabelId === id) {
+        activeLabelId = null;
+        setActiveLabelById(null);
+        if (previewNotesSite?.id === id) previewNotesSite = null;
+        if (notesActionItem?.id === id) notesActionItem = null;
+        updateNotesPanel();
+        updateNotesActions();
+        return;
+      }
+      setActiveLabelById(id);
+      previewNotesSite = { id, lat, lng, props };
+      notesActionItem = { id, lat, lng, props, text, detail, el };
+      updateNotesPanel();
+      updateNotesActions();
+    });
+    els.labelLayer.appendChild(el);
+    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    els.labelLines.appendChild(line);
+    labelItems.push({
+      id,
+      kind,
+      local,
+      lat,
+      lng,
+      props,
+      el,
+      line,
+      visible: true,
+      horizonAzimuth: azimuth,
+      horizonAltitude: altitude,
+      horizonDistM: distM,
+      clusterId
+    });
+  }
+
+  function addHorizonClusterLabel(cluster, local) {
+    const clusterId = cluster.id;
+    const labelId = horizonClusterLabelId(clusterId);
+    if (hasLabel(labelId)) return;
+    const members = Array.isArray(cluster.members) ? cluster.members : [];
+    const isMultiCluster = members.length > 1;
+    const title = horizonClusterTitle(cluster);
+    const detail = horizonClusterDetail(cluster);
+    const el = document.createElement('div');
+    el.className = 'site-label nms site-label--horizon-cluster';
+    if (isMultiCluster) {
+      el.innerHTML = `<div class="horizon-cluster-label-head">`
+        + '<button type="button" class="label-expand-btn" aria-pressed="false" aria-label="Expand All" title="Expand All"><i class="ph-bold ph-arrows-out" aria-hidden="true"></i></button>'
+        + `</div>`
+        + `<span class="label-title">${escapeHtml(title)}</span>`;
+    } else {
+      el.innerHTML = `<span class="label-title">${escapeHtml(title)}</span>`
+        + (detail ? `<span class="detail">${escapeHtml(detail)}</span>` : '');
+    }
+    el.addEventListener('click', (ev) => {
+      if (ev.target.closest('.label-expand-btn')) return;
+      ev.stopPropagation();
+      if (activeLabelId === labelId) {
+        activeLabelId = null;
+        setActiveLabelById(null);
+        if (previewNotesSite?.id === labelId) previewNotesSite = null;
+        if (notesActionItem?.id === labelId) notesActionItem = null;
+        updateNotesPanel();
+        updateNotesActions();
+        return;
+      }
+      setActiveLabelById(labelId);
+      const anchor = members[0] || cluster;
+      previewNotesSite = {
+        id: labelId,
+        lat: Number(anchor.lat),
+        lng: Number(anchor.lng),
+        props: anchor.props || {}
+      };
+      notesActionItem = {
+        id: labelId,
+        local,
+        lat: Number(anchor.lat),
+        lng: Number(anchor.lng),
+        props: anchor.props || {},
+        text: horizonClusterTitle(cluster),
+        detail: horizonClusterDetail(cluster),
+        el
+      };
+      updateNotesPanel();
+      updateNotesActions();
+    });
+    const expandBtn = el.querySelector('.label-expand-btn');
+    expandBtn?.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      toggleHorizonClusterExpanded(clusterId);
+    });
+    els.labelLayer.appendChild(el);
+    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    els.labelLines.appendChild(line);
+    labelItems.push({
+      id: labelId,
+      kind: 'horizon',
+      local,
+      lat: Number(cluster.lat),
+      lng: Number(cluster.lng),
+      props: members[0]?.props || {},
+      el,
+      line,
+      visible: true,
+      clusterId,
+      horizonAzimuth: Number(cluster.azimuth ?? cluster.bearing),
+      horizonAltitude: Number(cluster.altitude),
+      horizonDistM: Number(cluster.distM)
+    });
+    if (horizonExpandedClusters.has(clusterId)) setHorizonClusterLabelExpanded(clusterId, true);
+  }
+
+  function renderHorizonClusterMarkers(clusters) {
+    clearHorizonClusterMarkers();
+    horizonClusters = Array.isArray(clusters) ? clusters : [];
+    for (const cluster of horizonClusters) {
+      const members = Array.isArray(cluster.members) ? cluster.members : [];
+      const count = Number(cluster.count) || members.length;
+      const isCluster = count > 1;
+      const anchor = isCluster ? cluster : (members[0] || cluster);
+      const lat = Number(anchor?.lat);
+      const lng = Number(anchor?.lng);
+      const azimuth = Number(anchor?.azimuth ?? anchor?.bearing);
+      const altitude = Number(anchor?.altitude);
+      const distM = Number(anchor?.distM);
+      if (!isFinite(azimuth) || !isFinite(altitude)) continue;
+      const local = localFromLonLatUnbounded(lng, lat);
+      if (!local) continue;
+      const clusterId = cluster.id;
+      const repClass = members[0]?.props?.MONUMENT_CLASS || '';
+
+      const el = document.createElement('div');
+      el.className = isCluster ? 'rel-marker rel-marker--horizon' : 'rel-marker rel-marker--horizon rel-marker--horizon-single';
+      el.title = horizonClusterTitle(cluster);
+      el.innerHTML = `<span class="megicon"></span>${isCluster ? `<span class="horizon-count">${count}</span>` : ''}`;
+      renderMegIconInto(el.querySelector('.megicon'), repClass, TOUR_MARKER_ICON_SIZE);
+      el.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        if (!showHorizonRelational) return;
+        const labelId = horizonClusterLabelId(clusterId);
+        if (hasLabel(labelId)) {
+          removeFlatLabel(labelId);
+          if (horizonExpandedClusters.has(clusterId)) collapseHorizonCluster(clusterId);
+          return;
+        }
+        addHorizonClusterLabel(cluster, local);
+      });
+      els.markerLayer?.appendChild(el);
+      horizonClusterMarkers.push({
+        id: clusterId, el, local, lat, lng, cluster, isCluster, azimuth, altitude, distM
+      });
+    }
+    updateRelationalMarkers();
+  }
+
+  async function loadHorizonRelationalMarkers() {
+    const token = ++horizonLoadToken;
+    clearHorizonRelationalMarkers();
+    if (!currentPatch || !showHorizonRelational || !cameraState.observerMode) return;
+
+    const observer = getHorizonObserverFocus();
+    if (!observer) return;
+
+    horizonRelationalLoading = true;
+    let ownedProgressUi = false;
+    const progress = (message, pct = null) => {
+      if (!showHorizonRelational || token !== horizonLoadToken) return;
+      if (!ownedProgressUi) {
+        syncFpvCenterControls();
+        ownedProgressUi = true;
+      }
+      showHorizonCalcPanel(true);
+      setHorizonCalcProgress(message, pct);
+    };
+    const finishProgress = (message, pct = 1, delayMs = 800) => {
+      if (!ownedProgressUi) {
+        horizonRelationalLoading = false;
+        return;
+      }
+      if (message) progress(message, pct);
+      window.setTimeout(() => {
+        if (token !== horizonLoadToken) return;
+        ownedProgressUi = false;
+        horizonRelationalLoading = false;
+        hideHorizonCalcPanelUnlessViewshed();
+      }, delayMs);
+    };
+    const abortProgress = () => {
+      ownedProgressUi = false;
+      horizonRelationalLoading = false;
+      hideHorizonCalcPanelUnlessViewshed();
+    };
+
+    const resKey = normalizeHorizonResKey(horizonResKey);
+    try {
+      progress('Horizon relational monuments…', 0.05);
+      try {
+        if (!horizonCacheValidForObserver(observer, resKey)) {
+          progress('Waiting for viewshed horizon…', 0.12);
+          scheduleViewshedHorizonBackground(resKey, false);
+          await waitForViewshedHorizonReady(observer, resKey);
+        }
+      } catch (e) {
+        els.nmsStatus.textContent = `Horizon viewshed: ${e.message || e}`;
+        abortProgress();
+        return;
+      }
+      if (!showHorizonRelational || token !== horizonLoadToken) {
+        abortProgress();
+        return;
+      }
+      if (!viewshedHorizonData?.length) {
+        els.nmsStatus.textContent = 'Horizon profile not ready — wait for viewshed in panorama.';
+        abortProgress();
+        return;
+      }
+
+      const env = horizonQueryEnvelope();
+      if (!env) {
+        abortProgress();
+        return;
+      }
+
+      if (!selectedMonumentClasses.size) {
+        els.nmsStatus.textContent = 'Horizon relational: enable at least one monument class in Configuration.';
+        abortProgress();
+        return;
+      }
+
+      progress(`Fetching relational monuments (${VIEWSHED_SCAN_RADIUS_KM} km)…`, null);
+      let features = [];
+      let sourceCounts = { roi: 0, ni: 0 };
+      let fetchWarnings = [];
+      try {
+        const fetchResult = await fetchRelationalMonumentsInEnvelope(env);
+        features = fetchResult.features || [];
+        sourceCounts = fetchResult.sourceCounts || sourceCounts;
+        fetchWarnings = fetchResult.warnings || [];
+        if (fetchWarnings.length) {
+          console.warn('[horizon-relational] partial fetch', fetchWarnings, sourceCounts);
+        }
+      } catch (e) {
+        els.nmsStatus.textContent = `Horizon monuments request failed: ${e.message || e}`;
+        abortProgress();
+        return;
+      }
+      if (!showHorizonRelational || token !== horizonLoadToken) {
+        abortProgress();
+        return;
+      }
+
+      const monuments = relationalMonumentsForHorizonWorker(features);
+      if (!monuments.length) {
+        els.nmsStatus.textContent = `Horizon relational: 0 monuments in ${VIEWSHED_SCAN_RADIUS_KM} km (check monument class selection).`;
+        finishProgress('Horizon relational: no monuments in range', 1, 600);
+        return;
+      }
+
+      progress(`Matching ${monuments.length} sites to viewshed alt/az…`, 0.42);
+      let matchPayload = null;
+      try {
+        matchPayload = await matchHorizonMonumentsInWorker(
+          observer,
+          viewshedHorizonData,
+          monuments,
+          resKey,
+          token,
+          (message, pct) => progress(message, pct)
+        );
+      } catch (e) {
+        els.nmsStatus.textContent = `Horizon match failed: ${e.message || e}`;
+        abortProgress();
+        return;
+      }
+      if (!showHorizonRelational || token !== horizonLoadToken) {
+        abortProgress();
+        return;
+      }
+
+      progress('Placing horizon markers…', 0.96);
+      const clusters = matchPayload?.clusters || [];
+      const matchCount = Number(matchPayload?.matchCount) || 0;
+      console.info('[horizon-relational]', {
+        fetched: features.length,
+        roi: sourceCounts.roi,
+        ni: sourceCounts.ni,
+        relational: monuments.length,
+        onSkyline: matchCount,
+        markers: clusters.length,
+        fetchWarnings: fetchWarnings.length ? fetchWarnings : undefined
+      });
+
+      renderHorizonClusterMarkers(clusters);
+      const singles = clusters.filter((c) => (c.count || c.members?.length || 0) <= 1).length;
+      const multi = clusters.length - singles;
+      if (!clusters.length) {
+        const obs = getHorizonObserverFocus();
+        const obsTxt = obs ? `${obs.lat.toFixed(5)}, ${obs.lng.toFixed(5)}` : 'unknown';
+        els.nmsStatus.textContent = `Horizon relational: 0 within float at ${obsTxt} (${monuments.length} relational in ${VIEWSHED_SCAN_RADIUS_KM} km). Wait for viewshed, then try a larger float (m).`;
+        console.warn('[horizon-relational] no matches', { observer: obs, monuments: monuments.length, viewshedPoints: viewshedHorizonData?.length });
+        finishProgress('Horizon relational: no sites within float', 1);
+      } else {
+        const warnTxt = fetchWarnings.length ? ` (${fetchWarnings.join('; ')})` : '';
+        els.nmsStatus.textContent = `Horizon relational: ${matchCount} site${matchCount === 1 ? '' : 's'} on skyline — ${singles} individual marker${singles === 1 ? '' : 's'}${multi ? `, ${multi} cluster${multi === 1 ? '' : 's'}` : ''} — fetched ROI ${sourceCounts.roi}, NI ${sourceCounts.ni}${warnTxt}.`;
+        finishProgress(
+          `Horizon relational ready — ${matchCount} site${matchCount === 1 ? '' : 's'}, ${clusters.length} marker${clusters.length === 1 ? '' : 's'}`,
+          1
+        );
+      }
+      updateLegendPanel();
+    } catch (e) {
+      console.warn('[horizon-relational] load failed', e);
+      abortProgress();
+    }
+  }
+
+  function getHorizonObserverFocus() {
+    if (cameraState.observerMode && panoramaObserverFocus) {
+      return { lat: Number(panoramaObserverFocus.lat), lng: Number(panoramaObserverFocus.lng) };
+    }
+    if (currentFocus && isFinite(currentFocus.lat) && isFinite(currentFocus.lng)) {
+      return { lat: Number(currentFocus.lat), lng: Number(currentFocus.lng) };
+    }
+    if (selectedSite && isFinite(selectedSite.lat) && isFinite(selectedSite.lng)) {
+      return { lat: Number(selectedSite.lat), lng: Number(selectedSite.lng) };
+    }
+    return null;
+  }
+
+  function horizonObserverMatches(a, b, eps = 0.00004) {
+    if (!a || !b) return false;
+    return Math.abs(Number(a.lat) - Number(b.lat)) <= eps
+      && Math.abs(Number(a.lng) - Number(b.lng)) <= eps;
+  }
+
+  function setHorizonCalcProgress(message, pct = null) {
+    const msg = String(message || '');
+    if (els.horizonCalcText) els.horizonCalcText.textContent = msg;
+    const indeterminate = !!msg && pct == null;
+    if (els.horizonCalcProgress) {
+      els.horizonCalcProgress.dataset.mode = indeterminate ? 'indeterminate' : 'determinate';
+    }
+    if (!indeterminate) {
+      const p = pct == null ? null : Math.max(0, Math.min(1, Number(pct) || 0));
+      if (p != null && els.horizonCalcProgressFill) {
+        els.horizonCalcProgressFill.style.transform = `scaleX(${p})`;
+      }
+      if (p != null && els.horizonCalcProgress) {
+        els.horizonCalcProgress.setAttribute('aria-valuenow', String(Math.round(p * 100)));
+      }
+    }
+  }
+
+  function hideHorizonCalcPanelUnlessViewshed() {
+    if (!viewshedHorizonComputing) showHorizonCalcPanel(false);
+  }
+
+  function maxHorizonBlockDistM(horizonData, observer) {
+    let maxD = 0;
+    for (const p of horizonData || []) {
+      const d = horizonFeatureDistanceM(observer, p?.horizonLat, p?.horizonLon);
+      if (isFinite(d) && d > maxD) maxD = d;
+    }
+    return maxD;
+  }
+
+  function viewshedProgressLabel(resKey, scanRadiusKm = VIEWSHED_SCAN_RADIUS_KM) {
+    const key = normalizeHorizonResKey(resKey);
+    const steps = key === 'quick' ? 360 : 3600;
+    const zoom = key === 'super' ? 12 : 11;
+    return `${scanRadiusKm} km scan · Z${zoom} · ${steps} bearings`;
+  }
+
+  function horizonCacheValidForObserver(observer, resKey = null) {
+    if (!viewshedHorizonData?.length || !viewshedHorizonObserver || !observer) return false;
+    if (!horizonObserverMatches(viewshedHorizonObserver, observer)) return false;
+    if (Number(viewshedHorizonScanRadiusKm) !== VIEWSHED_SCAN_RADIUS_KM) return false;
+    if (viewshedHorizonSettingsVersion !== VIEWSHED_SETTINGS_VERSION) return false;
+    if (resKey && viewshedHorizonComputedResKey && viewshedHorizonComputedResKey !== resKey) return false;
+    return true;
+  }
+
+  function syncHorizonResUiFromCache() {
+    const key = normalizeHorizonResKey(viewshedHorizonComputedResKey || horizonResKey);
+    horizonResKey = key;
+    if (els.horizonResKey) els.horizonResKey.value = key;
+    setHorizonDrawButtonsActive(key === 'hires' || key === 'super' ? key : null);
+  }
+
+  function restoreViewshedHorizonIfCached(observer, resKey = null) {
+    if (!horizonCacheValidForObserver(observer, resKey)) return false;
+    syncHorizonResUiFromCache();
+    showHorizonCalcPanel(false);
+    syncViewshedHorizonVisibility();
+    updateSkyDomeViewshedMask();
+    notifyViewshedHorizonReady();
+    updateTerrainHorizonMaskUniforms(terrainMesh?.material, null);
+    astronomyOverlay?.updateOverlay();
+    return true;
+  }
+
+  function showHorizonCalcPanel(show) {
+    els.horizonCalcPanel?.classList.toggle('hidden', !show);
+    if (!show) setHorizonCalcProgress('', 0);
+  }
+
+  function setHorizonDrawButtonsActive(resKey) {
+    els.fpvHorizonHires?.classList.toggle('active', resKey === 'hires');
+    els.fpvHorizonSuper?.classList.toggle('active', resKey === 'super');
+  }
+
+  function syncFpvCenterControls() {
+    const fpv = !!cameraState.observerMode;
+    els.fpvHorizonStatusWrap?.classList.toggle('hidden', !fpv);
+    els.fpvHorizonStatusWrap?.setAttribute('aria-hidden', fpv ? 'false' : 'true');
+    if (!fpv) {
+      showHorizonCalcPanel(false);
+      setHorizonDrawButtonsActive(null);
+    }
+  }
+
+  function runHorizonDrawAtRes(resKey) {
+    if (!cameraState.observerMode || !currentPatch) return;
+    const key = normalizeHorizonResKey(resKey);
+    horizonResKey = key;
+    if (els.horizonResKey) els.horizonResKey.value = key;
+    setHorizonDrawButtonsActive(key === 'hires' || key === 'super' ? key : null);
+    scheduleViewshedHorizonBackground(key, true);
+  }
+
+  function viewshedDrawRadiusM() {
+    return VIEWSHED_DRAW_RADIUS_M;
+  }
+
+  // 300526 backup — eye-sync fallback radius for near-field composite only (not draw ring).
+  function viewshedDisplayRadiusM() {
+    if (!currentPatch) return 12000;
+    const outerHalf = horizonPatchMeters > 0 ? horizonPatchMeters * 0.5 : 0;
+    const patchHalf = centrePatchHalfM();
+    return Math.min(48000, Math.max(9000, outerHalf * 0.94, patchHalf * 0.96));
+  }
+
+  function horizonDrawProfileData() {
+    return horizonDrawProfile?.length ? horizonDrawProfile : viewshedHorizonData;
+  }
+
+  // Viewshed azimuth uses compass bearing (0°=north, 90°=east), same as camera bearing:
+  //   x += sin(bearing), z -= cos(bearing)
+  function horizonSampleAtAzimuth(horizonData, azimuthDeg) {
+    let best = null;
+    let bestDiff = Infinity;
+    for (const p of horizonData) {
+      const az = Number(p?.azimuth);
+      if (!isFinite(az)) continue;
+      const diff = Math.abs(((az - azimuthDeg + 540) % 360) - 180);
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        best = p;
+      }
+    }
+    return best;
+  }
+
+  function horizonFeatureDistanceM(observer, horizonLat, horizonLon) {
+    const lat1 = Number(observer?.lat);
+    const lon1 = Number(observer?.lng);
+    const lat2 = Number(horizonLat);
+    const lon2 = Number(horizonLon);
+    if (!isFinite(lat1) || !isFinite(lon1) || !isFinite(lat2) || !isFinite(lon2)) return null;
+    const φ1 = THREE.MathUtils.degToRad(lat1);
+    const φ2 = THREE.MathUtils.degToRad(lat2);
+    const Δλ = THREE.MathUtils.degToRad(lon2 - lon1);
+    const a = Math.sin((φ2 - φ1) * 0.5) ** 2
+      + Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ * 0.5) ** 2;
+    return 6371000 * 2 * Math.asin(Math.min(1, Math.sqrt(a)));
+  }
+
+  function viewshedAltitudeForSceneEye(altitudeDeg, observer, horizonLat, horizonLon, radiusM, sceneEyeAmal, workerEyeAmal) {
+    let alt = Number(altitudeDeg);
+    if (!isFinite(alt)) return 0;
+    const groundDelta = sceneEyeAmal - workerEyeAmal;
+    if (Math.abs(groundDelta) < 0.05) return alt;
+    const distM = horizonFeatureDistanceM(observer, horizonLat, horizonLon) || radiusM;
+    alt += THREE.MathUtils.radToDeg(Math.atan(groundDelta / Math.max(50, distM)));
+    return Math.max(-90, Math.min(90, alt));
+  }
+
+  function viewshedObserverEyeY(observerLocal) {
+    const observer = observerCameraLocal();
+    if (observer) return observer.y;
+    if (observerLocal) return groundYAtLocal(observerLocal.x, observerLocal.z) + OBSERVER_HEIGHT_OFFSET_M;
+    return OBSERVER_HEIGHT_OFFSET_M;
+  }
+
+  function viewshedRingPointForAzimuth(horizonData, observerLocal, obsY, radiusM, azimuthDeg) {
+    const sample = horizonSampleAtAzimuth(horizonData, azimuthDeg);
+    if (!sample || !observerLocal) return null;
+    const alt = Number(sample.altitude);
+    if (!isFinite(alt)) return null;
+    const bearingRad = THREE.MathUtils.degToRad(azimuthDeg);
+    return {
+      x: observerLocal.x + Math.sin(bearingRad) * radiusM,
+      y: obsY + Math.tan(THREE.MathUtils.degToRad(alt)) * radiusM,
+      z: observerLocal.z - Math.cos(bearingRad) * radiusM,
+      alt,
+      azimuth: Number(sample.azimuth)
+    };
+  }
+
+  function terrainMeshSampleValidAtLocal(x, z) {
+    if (!currentPatch) return false;
+    const extent = terrainMeshExtentHalfM();
+    if (Math.abs(x) > extent + 20 || Math.abs(z) > extent + 20) return false;
+    return outerAerialUvInsideAtLocal(x, z, 0.008);
+  }
+
+  function meshHorizonStepM(distM) {
+    if (distM < 2500) return 25;
+    if (distM < 8000) return 80;
+    return 220;
+  }
+
+  function meshHorizonAltDegAtAzimuth(azimuthDeg, observerLocal, obsY) {
+    if (!observerLocal || !currentPatch) return -90;
+    const bearingRad = THREE.MathUtils.degToRad(azimuthDeg);
+    const sinB = Math.sin(bearingRad);
+    const cosB = Math.cos(bearingRad);
+    const ox = observerLocal.x;
+    const oz = observerLocal.z;
+    const maxDist = terrainMeshExtentHalfM() * 1.02;
+    let maxAlt = -90;
+    for (let d = 20; d <= maxDist; d += meshHorizonStepM(d)) {
+      const x = ox + sinB * d;
+      const z = oz - cosB * d;
+      if (!terrainMeshSampleValidAtLocal(x, z)) break;
+      const ty = terrainYAtLocal(x, z);
+      if (!Number.isFinite(ty)) continue;
+      const alt = THREE.MathUtils.radToDeg(Math.atan2(ty - obsY, Math.max(d, 1)));
+      if (alt > maxAlt) maxAlt = alt;
+    }
+    return Math.max(-90, Math.min(90, maxAlt));
+  }
+
+  function sceneObserverEyeAmal(observerLocal) {
+    const observer = observerCameraLocal();
+    const ve = Math.max(0.0001, effectiveVerticalExaggeration());
+    if (observer?.inside) {
+      return observer.groundY / ve + Number(baseCenterElev || 0) + OBSERVER_HEIGHT_OFFSET_M;
+    }
+    if (observerLocal) {
+      return groundYAtLocal(observerLocal.x, observerLocal.z) / ve + Number(baseCenterElev || 0) + OBSERVER_HEIGHT_OFFSET_M;
+    }
+    return Number(viewshedObserverH || 0);
+  }
+
+  function buildHorizonDrawProfile(viewshedData, observer, observerH = viewshedObserverH) {
+    if (!viewshedData?.length || !observer) return null;
+    const observerLocal = localFromLonLatUnbounded(observer.lng, observer.lat);
+    if (!observerLocal) return null;
+    const obsY = viewshedObserverEyeY(observerLocal);
+    const sceneEyeAmal = sceneObserverEyeAmal(observerLocal);
+    const workerEyeAmal = Number.isFinite(observerH) ? Number(observerH) : sceneEyeAmal;
+    const nearEyeSyncRadiusM = viewshedDisplayRadiusM();
+    const farCutoffM = terrainMeshExtentHalfM() + 500;
+    const profile = [];
+    for (const p of viewshedData) {
+      const az = Number(p?.azimuth);
+      if (!Number.isFinite(az)) continue;
+      const viewshedAlt = viewshedAltitudeForSceneEye(
+        p?.altitude,
+        observer,
+        p?.horizonLat,
+        p?.horizonLon,
+        nearEyeSyncRadiusM,
+        sceneEyeAmal,
+        workerEyeAmal
+      );
+      const blockDistM = horizonFeatureDistanceM(observer, p?.horizonLat, p?.horizonLon);
+      const rawViewshedAlt = Number(p?.altitude);
+      let altitude;
+      // Viewshed horizon is the horizon. Use eye-synced viewshed where possible; fall back to raw.
+      // This ensures terrain is clipped to the same skyline and can never exceed it.
+      if (isFinite(blockDistM) && blockDistM > farCutoffM) {
+        altitude = Number.isFinite(rawViewshedAlt) ? rawViewshedAlt : viewshedAlt;
+      } else {
+        altitude = Number.isFinite(viewshedAlt) ? viewshedAlt : rawViewshedAlt;
+      }
+      if (!Number.isFinite(altitude)) continue;
+      profile.push({ azimuth: az, altitude });
+    }
+    profile.sort((a, b) => a.azimuth - b.azimuth);
+    return profile.length ? profile : null;
+  }
+
+  // Draw az/alt on a fixed-radius ring at the observer eye — angular only.
+  function buildHorizonRingFromProfile(horizonData, observer) {
+    const observerLocal = localFromLonLatUnbounded(observer.lng, observer.lat);
+    if (!observerLocal || !Array.isArray(horizonData) || !horizonData.length) {
+      return { observerLocal, ring: [], obsY: 0, radiusM: 0 };
+    }
+    const radiusM = viewshedDrawRadiusM();
+    const obsY = viewshedObserverEyeY(observerLocal);
+    const ring = [];
+    for (const p of horizonData) {
+      const az = Number(p?.azimuth);
+      const alt = Number(p?.altitude);
+      if (!Number.isFinite(az) || !Number.isFinite(alt)) continue;
+      const bearingRad = THREE.MathUtils.degToRad(az);
+      ring.push({
+        x: observerLocal.x + Math.sin(bearingRad) * radiusM,
+        y: obsY + Math.tan(THREE.MathUtils.degToRad(alt)) * radiusM,
+        z: observerLocal.z - Math.cos(bearingRad) * radiusM
+      });
+    }
+    return { observerLocal, ring, obsY, radiusM };
+  }
+
+  function clearHorizonLineMesh() {
+    if (!horizonLineMesh) return;
+    scene.remove(horizonLineMesh);
+    horizonLineMesh.geometry?.dispose?.();
+    horizonLineMesh.material?.dispose?.();
+    horizonLineMesh = null;
+  }
+
+  function clearHorizonFillMesh() {
+    if (!horizonFillMesh) return;
+    scene.remove(horizonFillMesh);
+    horizonFillMesh.geometry?.dispose?.();
+    horizonFillMesh.material?.dispose?.();
+    horizonFillMesh = null;
+  }
+
+  function clearViewshedHorizonVisuals() {
+    clearHorizonLineMesh();
+    clearHorizonFillMesh();
+  }
+
+  function purgeViewshedVisualsUnlessPanorama() {
+    if (cameraState.observerMode) return;
+    if (horizonLineMesh || horizonFillMesh) {
+      clearViewshedHorizonVisuals();
+    }
+  }
+
+  function cancelViewshedHorizonCompute() {
+    viewshedHorizonToken++;
+    viewshedHorizonComputing = false;
+    showHorizonCalcPanel(false);
+    setHorizonCalcProgress('', 0);
+  }
+
+  function clearViewshedHorizon() {
+    cancelViewshedHorizonCompute();
+    viewshedHorizonData = null;
+    horizonDrawProfile = null;
+    viewshedHorizonObserver = null;
+    viewshedObserverH = null;
+    viewshedHorizonComputedResKey = null;
+    viewshedHorizonScanRadiusKm = null;
+    viewshedHorizonSettingsVersion = null;
+    clearViewshedHorizonVisuals();
+    updateSkyDomeViewshedMask();
+  }
+
+  // ---------------------------------------------------------------------------
+  // VIEWSHED HORIZON VISUALS (Phase 2 scope — not modified in Phase 0/1)
+  // Panorama mode: horizon line + fill polygon. Astronomy paths attach here in Phase 3.
+  // ---------------------------------------------------------------------------
+
+  const HORIZON_LINE_COLOR = 0x505050;
+  const HORIZON_FILL_TOP_COLOR = new THREE.Color(0xd1d5db);
+  const HORIZON_FILL_FLOOR_COLOR = new THREE.Color(0x7a8064);
+  const HORIZON_FILL_ALT_BLEND_DEG = 0.2 / 3;
+
+  function horizonFillVertexColor(altDeg, horizonAltDeg, out) {
+    const t = Math.max(0, Math.min(1, (horizonAltDeg - altDeg) / HORIZON_FILL_ALT_BLEND_DEG));
+    out.copy(HORIZON_FILL_TOP_COLOR).lerp(HORIZON_FILL_FLOOR_COLOR, t);
+  }
+
+  function buildHorizonFillMesh(ring, observerLocal, includeInnerCap = false) {
+    clearHorizonFillMesh();
+    if (!ring || ring.length < 3 || !observerLocal) return;
+
+    const obsY = viewshedObserverEyeY(observerLocal);
+    const horizonAltByIdx = ring.map((top) => {
+      const dx = top.x - observerLocal.x;
+      const dz = top.z - observerLocal.z;
+      const d = Math.max(1, Math.hypot(dx, dz));
+      return THREE.MathUtils.radToDeg(Math.atan2(top.y - obsY, d));
+    });
+    const vertexColor = new THREE.Color();
+
+    const groundPts = ring.map((top) => {
+      const gy = groundYAtLocal(top.x, top.z);
+      return { x: top.x, y: Math.min(gy, top.y - 0.05), z: top.z };
+    });
+
+    const positions = [];
+    const colors = [];
+    const indices = [];
+    const n = ring.length;
+
+    function pushVertex(x, y, z, horizonAltDeg) {
+      positions.push(x, y, z);
+      const dx = x - observerLocal.x;
+      const dz = z - observerLocal.z;
+      const d = Math.max(1, Math.hypot(dx, dz));
+      const altDeg = THREE.MathUtils.radToDeg(Math.atan2(y - obsY, d));
+      horizonFillVertexColor(altDeg, horizonAltDeg, vertexColor);
+      colors.push(vertexColor.r, vertexColor.g, vertexColor.b);
+    }
+
+    // Distant curtain: viewshed horizon ring down to ground at each bearing.
+    for (let i = 0; i < n; i++) {
+      const i2 = (i + 1) % n;
+      const topA = ring[i];
+      const topB = ring[i2];
+      const botA = groundPts[i];
+      const botB = groundPts[i2];
+      const base = positions.length / 3;
+      pushVertex(topA.x, topA.y, topA.z, horizonAltByIdx[i]);
+      pushVertex(topB.x, topB.y, topB.z, horizonAltByIdx[i2]);
+      pushVertex(botB.x, botB.y, botB.z, horizonAltByIdx[i2]);
+      pushVertex(botA.x, botA.y, botA.z, horizonAltByIdx[i]);
+      indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
+    }
+
+    // Inner cap only when terrain mesh is hidden (legacy fallback).
+    if (includeInnerCap) {
+      const obsGroundY = groundYAtLocal(observerLocal.x, observerLocal.z);
+      const centerIdx = positions.length / 3;
+      const centerHorizonAlt = horizonAltByIdx.reduce((a, b) => a + b, 0) / Math.max(1, horizonAltByIdx.length);
+      pushVertex(observerLocal.x, obsGroundY, observerLocal.z, centerHorizonAlt);
+      for (let i = 0; i < n; i++) {
+        const g = groundPts[i];
+        pushVertex(g.x, g.y, g.z, horizonAltByIdx[i]);
+      }
+      for (let i = 0; i < n; i++) {
+        const i2 = (i + 1) % n;
+        indices.push(centerIdx, centerIdx + 1 + i, centerIdx + 1 + i2);
+      }
+    }
+
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geom.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+    geom.setIndex(indices);
+    geom.computeVertexNormals();
+
+    const mat = new THREE.MeshLambertMaterial({
+      vertexColors: true,
+      fog: true,
+      depthWrite: true,
+      depthTest: true,
+      side: THREE.DoubleSide
+    });
+
+    horizonFillMesh = new THREE.Mesh(geom, mat);
+    horizonFillMesh.userData.viewshedHorizon = true;
+    horizonFillMesh.renderOrder = 12;
+    horizonFillMesh.frustumCulled = false;
+    scene.add(horizonFillMesh);
+  }
+
+  function buildHorizonLineMesh(ring) {
+    clearHorizonLineMesh();
+    if (!ring || ring.length < 3) return;
+    const positions = [];
+    for (const p of ring) positions.push(p.x, p.y + 1.5, p.z);
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    const mat = new THREE.LineBasicMaterial({
+      color: HORIZON_LINE_COLOR,
+      transparent: false,
+      opacity: 1,
+      depthTest: false,
+      depthWrite: false
+    });
+    horizonLineMesh = new THREE.LineLoop(geom, mat);
+    horizonLineMesh.userData.viewshedHorizon = true;
+    horizonLineMesh.renderOrder = 13;
+    horizonLineMesh.frustumCulled = false;
+    scene.add(horizonLineMesh);
+  }
+
+  function applyViewshedHorizonVisuals(horizonData, observer, observerH = null) {
+    if (!currentPatch || !Array.isArray(horizonData) || !horizonData.length || !observer) return;
+    viewshedHorizonData = horizonData;
+    viewshedHorizonObserver = { lat: Number(observer.lat), lng: Number(observer.lng) };
+    if (isFinite(observerH)) viewshedObserverH = Number(observerH);
+    horizonDrawProfile = buildHorizonDrawProfile(horizonData, viewshedHorizonObserver, viewshedObserverH);
+    if (!cameraState.observerMode) {
+      clearViewshedHorizonVisuals();
+      return;
+    }
+    const { observerLocal, ring } = buildHorizonRingFromProfile(horizonDrawProfileData(), viewshedHorizonObserver);
+    if (!observerLocal || ring.length < 3) return;
+    buildHorizonFillMesh(ring, observerLocal);
+    buildHorizonLineMesh(ring);
+    updateSkyDomeViewshedMask();
+    updateTerrainHorizonMaskUniforms(terrainMesh?.material, null);
+    astronomyOverlay?.updateOverlay();
+  }
+
+  function rebuildViewshedHorizonVisuals() {
+    syncViewshedHorizonVisibility();
+  }
+
+  function syncViewshedHorizonVisibility() {
+    if (!cameraState.observerMode) {
+      clearViewshedHorizonVisuals();
+      return;
+    }
+    if (!viewshedHorizonData || !viewshedHorizonObserver) return;
+    applyViewshedHorizonVisuals(viewshedHorizonData, viewshedHorizonObserver, viewshedObserverH);
+  }
+
+  function scheduleViewshedHorizonIfMoved(debounceMs = 450) {
+    clearTimeout(viewshedRescheduleTimer);
+    viewshedRescheduleTimer = setTimeout(() => {
+      if (!cameraState.observerMode || !currentPatch) return;
+      const observer = getHorizonObserverFocus();
+      if (!observer) return;
+      if (viewshedHorizonData && horizonObserverMatches(viewshedHorizonObserver, observer)) {
+        rebuildViewshedHorizonVisuals();
+        return;
+      }
+      scheduleViewshedHorizonBackground(null, false);
+    }, debounceMs);
+  }
+
+  function ensureHorizonWorker(forceNew = false) {
+    if (forceNew && horizonWorker) {
+      horizonWorker.terminate();
+      horizonWorker = null;
+    }
+    if (horizonWorker) return horizonWorker;
+    try {
+      horizonWorker = new Worker(HORIZON_WORKER_URL);
+    } catch (e) {
+      console.warn('[viewshed] worker unavailable', e);
+      horizonWorker = null;
+    }
+    return horizonWorker;
+  }
+
+  function scheduleViewshedHorizonBackground(resKeyOverride = null, force = false) {
+    if (!cameraState.observerMode || !currentPatch) return Promise.resolve(false);
+
+    const observer = getHorizonObserverFocus();
+    if (!observer) return Promise.resolve(false);
+
+    const resKey = normalizeHorizonResKey(resKeyOverride || els.horizonResKey?.value || horizonResKey);
+
+    // View toggles reuse any completed horizon for this observer — do not recompute.
+    if (!force && restoreViewshedHorizonIfCached(observer, resKey)) return Promise.resolve(true);
+
+    horizonResKey = resKey;
+    if (els.horizonResKey) els.horizonResKey.value = resKey;
+
+    cancelViewshedHorizonCompute();
+    const token = viewshedHorizonToken; // token captured after cancel (new compute generation)
+    if (showHorizonRelational) clearHorizonRelationalMarkers();
+    clearViewshedHorizonVisuals();
+    viewshedHorizonData = null;
+    horizonDrawProfile = null;
+    viewshedHorizonObserver = null;
+    viewshedObserverH = null;
+    viewshedHorizonComputedResKey = null;
+    viewshedHorizonScanRadiusKm = null;
+    viewshedHorizonSettingsVersion = null;
+
+    const worker = ensureHorizonWorker(false);
+    if (!worker) {
+      showHorizonCalcPanel(true);
+      setHorizonCalcProgress('Viewshed worker unavailable — hard refresh (Ctrl+F5)', 0);
+      console.error('[viewshed] worker unavailable');
+      return Promise.reject(new Error('Viewshed worker unavailable'));
+    }
+
+    viewshedHorizonComputing = true;
+    showHorizonCalcPanel(true);
+    setHorizonCalcProgress(`Computing viewshed horizon (${viewshedProgressLabel(resKey)})…`, 0.05);
+
+    setHorizonDrawButtonsActive(resKey === 'hires' || resKey === 'super' ? resKey : null);
+
+    return new Promise((resolve, reject) => {
+      const onMessage = (ev) => {
+        if (ev.data?.token !== token) return;
+        const msg = ev.data || {};
+        if (msg.type === 'PROGRESS') {
+          if (!cameraState.observerMode || ev.data?.token !== token) return;
+          const done = Number(msg.payload?.done) || 0;
+          const total = Math.max(1, Number(msg.payload?.total) || 1);
+          const phase = String(msg.payload?.phase || '');
+          const base = phase === 'dem' ? 0.1 : phase === 'viewshed' ? 0.22 : phase === 'observer' ? 0.14 : 0.06;
+          const span = phase === 'dem' ? 0.12 : phase === 'viewshed' ? 0.62 : 0.08;
+          const pct = base + (done / total) * span;
+          setHorizonCalcProgress(msg.payload?.message || 'Calculating viewshed horizon…', pct);
+          return;
+        }
+        if (msg.type === 'VIEWSHED_RESULT') {
+          worker.removeEventListener('message', onMessage);
+          resolve(msg.payload);
+        }
+        if (msg.type === 'ERROR') {
+          worker.removeEventListener('message', onMessage);
+          reject(new Error(msg.payload?.message || 'Viewshed worker failed'));
+        }
+      };
+      worker.addEventListener('message', onMessage);
+      worker.postMessage({
+        type: 'COMPUTE_VIEWSHED',
+        token,
+        payload: {
+          lat: observer.lat,
+          lon: observer.lng,
+          resKey
+        }
+      });
+    })
+      .then((result) => {
+        if (!result || token !== viewshedHorizonToken) {
+          throw new Error('Viewshed cancelled');
+        }
+        const liveObserver = getHorizonObserverFocus() || observer;
+        if (!horizonObserverMatches(liveObserver, observer)) {
+          throw new Error('Observer moved during viewshed');
+        }
+
+        viewshedHorizonData = result.horizonData || [];
+        viewshedHorizonObserver = { lat: Number(observer.lat), lng: Number(observer.lng) };
+        if (isFinite(result.observerH)) viewshedObserverH = Number(result.observerH);
+        viewshedHorizonComputedResKey = resKey;
+        viewshedHorizonScanRadiusKm = Number(result.scanRadiusKm) || VIEWSHED_SCAN_RADIUS_KM;
+        viewshedHorizonSettingsVersion = VIEWSHED_SETTINGS_VERSION;
+
+        if (!cameraState.observerMode) {
+          showHorizonCalcPanel(false);
+          setHorizonDrawButtonsActive(null);
+          throw new Error('Left astronomy view during viewshed');
+        }
+
+        applyViewshedHorizonVisuals(viewshedHorizonData, viewshedHorizonObserver, viewshedObserverH);
+        notifyViewshedHorizonReady();
+        if (showHorizonRelational && !suppressHorizonRelationalAutoLoad) {
+          window.setTimeout(() => {
+            if (showHorizonRelational && !suppressHorizonRelationalAutoLoad) void loadHorizonRelationalMarkers();
+          }, 0);
+        }
+        const blockKm = Math.round(maxHorizonBlockDistM(viewshedHorizonData, viewshedHorizonObserver) / 1000);
+        const reachKm = Math.round(Number(result.maxReachDistKm) || 0);
+        setHorizonCalcProgress(
+          `Viewshed ready — ${viewshedHorizonScanRadiusKm} km scan, blockers to ${blockKm} km${reachKm ? ` (rays to ${reachKm} km)` : ''}`,
+          1
+        );
+        console.info('[viewshed]', viewshedProgressLabel(resKey, viewshedHorizonScanRadiusKm), `max blocker ${blockKm} km`, reachKm ? `max ray ${reachKm} km` : '');
+        if (reachKm > 0 && reachKm < viewshedHorizonScanRadiusKm * 0.75) {
+          console.warn(`[viewshed] rays stopped at ${reachKm} km (configured ${viewshedHorizonScanRadiusKm} km) — DEM fetch may be incomplete`);
+        }
+        window.setTimeout(() => {
+          if (token === viewshedHorizonToken) {
+            viewshedHorizonComputing = false;
+            if (!horizonRelationalLoading) hideHorizonCalcPanelUnlessViewshed();
+            setHorizonDrawButtonsActive(null);
+          }
+        }, 900);
+        return result;
+      })
+      .catch((err) => {
+        if (token !== viewshedHorizonToken) return Promise.reject(err);
+        viewshedHorizonComputing = false;
+        showHorizonCalcPanel(false);
+        setHorizonDrawButtonsActive(null);
+        console.warn('[viewshed] background compute failed', err);
+        return Promise.reject(err);
+      });
+  }
+
   async function enableRelationalMonumentsForCurrentView() {
-    showRelatedMonuments = false;
     showAllMonuments = false;
     showAllRelational = true;
     if (els.showRelatedMonuments) els.showRelatedMonuments.checked = false;
@@ -2317,16 +5483,43 @@
       }
     }
 
-    if (!showAllRelational || !relationalMarkers.length) return;
-    for (const m of relationalMarkers) {
-      const anchor = projectedScreenPoint(m.local, 0);
-      if (!anchor) {
-        m.el.style.display = 'none';
-        continue;
+    if (showAllRelational && relationalMarkers.length) {
+      for (const m of relationalMarkers) {
+        const anchor = projectedScreenPoint(m.local, 0);
+        if (!anchor) {
+          m.el.style.display = 'none';
+          continue;
+        }
+        m.el.style.display = 'block';
+        m.el.style.left = `${anchor.x}px`;
+        m.el.style.top = `${anchor.y}px`;
       }
-      m.el.style.display = 'block';
-      m.el.style.left = `${anchor.x}px`;
-      m.el.style.top = `${anchor.y}px`;
+    }
+
+    if (showHorizonRelational && horizonClusterMarkers.length) {
+      for (const m of horizonClusterMarkers) {
+        const anchor = horizonMarkerScreenPoint(m);
+        if (!anchor) {
+          m.el.style.display = 'none';
+          continue;
+        }
+        m.el.style.display = 'block';
+        m.el.style.left = `${anchor.x}px`;
+        m.el.style.top = `${anchor.y}px`;
+      }
+    }
+
+    if (showHorizonRelational && horizonMemberMarkers.length) {
+      for (const m of horizonMemberMarkers) {
+        const anchor = horizonMarkerScreenPoint(m);
+        if (!anchor) {
+          m.el.style.display = 'none';
+          continue;
+        }
+        m.el.style.display = 'block';
+        m.el.style.left = `${anchor.x}px`;
+        m.el.style.top = `${anchor.y}px`;
+      }
     }
   }
 
@@ -2607,7 +5800,11 @@
   }
 
   function clearLabels() {
-    for (const item of labelItems) item.el?.remove();
+    clearCustomLabels();
+    for (const item of labelItems) {
+      item.el?.remove();
+      item.line?.remove();
+    }
     labelItems = [];
     if (els.labelLines) els.labelLines.replaceChildren();
     closeLabelPopup();
@@ -2615,6 +5812,7 @@
   }
 
   function removeFlatLabel(id, { force = false } = {}) {
+    const removedKind = labelItems.find(item => item.id === id)?.kind || null;
     const keep = [];
     for (const item of labelItems) {
       if (item.id === id) {
@@ -2625,6 +5823,11 @@
       }
     }
     labelItems = keep;
+    if (removedKind === 'custom') {
+      customLabelMarkers = customLabelMarkers.filter((m) => m.id !== id);
+      customLabels = customLabels.filter((c) => c.id !== id);
+      updateCustomLabelPanel();
+    }
     if (activeLabelId === id) {
       activeLabelId = null;
       setActiveLabelById(null);
@@ -2651,6 +5854,9 @@
       kind === 'relational' ||
       kind === 'relatedRelational' ||
       kind === 'monumentsRelational' ||
+      kind === 'horizon' ||
+      kind === 'horizonMember' ||
+      kind === 'custom' ||
       (kind === 'all' && showAllLabels) ||
       (kind === 'related' && (showAllLabels || showRelatedMonuments));
     if (!allowed) return;
@@ -2720,6 +5926,32 @@
     };
   }
 
+  /** Place horizon target markers on the skyline at computed azimuth + altitude. */
+  function projectedScreenPointHorizon(azimuthDeg, altitudeDeg, distanceM) {
+    const observer = observerCameraLocal();
+    if (!observer) return null;
+    const bearingRad = THREE.MathUtils.degToRad(azimuthDeg);
+    const altRad = THREE.MathUtils.degToRad(altitudeDeg);
+    const dist = Math.max(80, Number(distanceM) || viewshedDisplayRadiusM());
+    const horiz = Math.cos(altRad) * dist;
+    const v = new THREE.Vector3(
+      observer.x + Math.sin(bearingRad) * horiz,
+      observer.y + Math.sin(altRad) * dist,
+      observer.z - Math.cos(bearingRad) * horiz
+    );
+    v.project(camera);
+    if (v.z < -1 || v.z > 1) return null;
+    return {
+      x: (v.x * 0.5 + 0.5) * els.container.clientWidth,
+      y: (-v.y * 0.5 + 0.5) * els.container.clientHeight
+    };
+  }
+
+  function horizonMarkerScreenPoint(marker) {
+    if (!marker || !isFinite(marker.azimuth) || !isFinite(marker.altitude)) return null;
+    return projectedScreenPointHorizon(marker.azimuth, marker.altitude, marker.distM);
+  }
+
   function screenOffsets() {
     return [
       [0, 0], [0, -34], [0, 34], [56, 0], [-56, 0],
@@ -2742,8 +5974,9 @@
     const maxY = els.container.clientHeight;
 
     for (const item of labelItems) {
-      // anchor at ground (so leader line terminates at the site)
-      const anchor = projectedScreenPoint(item.local, 0);
+      const anchor = (item.horizonAzimuth != null && item.horizonAltitude != null)
+        ? projectedScreenPointHorizon(item.horizonAzimuth, item.horizonAltitude, item.horizonDistM)
+        : projectedScreenPoint(item.local, 0);
       if (!anchor) {
         item.el.style.display = 'none';
         item.line.style.display = 'none';
@@ -3053,9 +6286,14 @@
     });
   }
 
-  async function goToSite(site) {
-    cameraState.observerMode = false;
-    syncPanoramaButton();
+  async function goToSite(site, options = {}) {
+    const skipDefaultMonuments = !!options.skipDefaultMonuments;
+    const viewRestore = !!options.viewRestore;
+    if (!viewRestore) {
+      cameraState.observerMode = false;
+      panoramaObserverFocus = null;
+      syncPanoramaButton();
+    }
     selectedSiteId = site.id;
     selectedSite = site;
     previewNotesSite = null;
@@ -3073,21 +6311,23 @@
     if (els.typeLine) els.typeLine.textContent = '';
     if (els.subtitle) els.subtitle.textContent = '';
     updateNotesPanel();
-    cameraState.pitch = 8;
-    cameraState.bearing = 28;
-    cameraState.distance = 1850;
+    if (!viewRestore) {
+      cameraState.pitch = 8;
+      cameraState.bearing = 28;
+      cameraState.distance = 1850;
+    }
     renderSites();
     updateFocusTarget();
     updateCamera();
     try {
-      await buildTerrain(currentFocus);
+      await buildTerrain(currentFocus, { skipMonumentLoad: viewRestore });
       // DEM is now rendered (terrain mesh built + added). Reveal site UI.
       if (selectedSiteId === site.id) {
         setStageLoadingProgress(1);
         setStageDemReady(true);
         syncPanoramaButton();
         updateNotesPanel();
-        await enableRelationalMonumentsForCurrentView();
+        if (!skipDefaultMonuments && !viewRestore) await enableRelationalMonumentsForCurrentView();
         setSidebarHidden(true);
       }
     } catch (e) {
@@ -3096,13 +6336,99 @@
     }
   }
 
+  function parseCoordinateValue(raw) {
+    if (raw == null) return NaN;
+    if (typeof raw === 'number') return raw;
+    let s = String(raw).trim();
+    if (!s) return NaN;
+    s = s.replace(/[\u2212\u2013\u2014]/g, '-').replace(/\u00a0/g, ' ');
+
+    let hemiSign = 1;
+    const hemi = s.match(/[NSEW]/i);
+    if (hemi) {
+      const h = hemi[0].toUpperCase();
+      if (h === 'S' || h === 'W') hemiSign = -1;
+      s = s.replace(/[NSEW]/gi, '').trim();
+    }
+
+    // DMS: 53°29'24" or 53 29 24
+    const dms = s.match(/^(-?\d+(?:[.,]\d+)?)\s*(?:°|d|deg)?\s*(\d+(?:[.,]\d+)?)?\s*(?:'|′|m|min)?\s*(\d+(?:[.,]\d+)?)?\s*(?:"|″|s|sec)?/i);
+    if (dms && (dms[2] != null || dms[3] != null)) {
+      const deg = Math.abs(parseFloat(String(dms[1]).replace(',', '.')) || 0);
+      const min = parseFloat(String(dms[2] || '0').replace(',', '.')) || 0;
+      const sec = parseFloat(String(dms[3] || '0').replace(',', '.')) || 0;
+      let val = deg + min / 60 + sec / 3600;
+      if ((parseFloat(String(dms[1]).replace(',', '.')) || 0) < 0) val = -val;
+      else if (hemiSign < 0) val = -val;
+      return val;
+    }
+
+    // Decimal: European comma, or strip thousands separators
+    if (s.includes(',') && !s.includes('.')) {
+      s = s.replace(',', '.');
+    } else if (s.includes(',') && s.includes('.')) {
+      const lastComma = s.lastIndexOf(',');
+      const lastDot = s.lastIndexOf('.');
+      if (lastComma > lastDot) {
+        s = s.replace(/\./g, '').replace(',', '.');
+      } else {
+        s = s.replace(/,/g, '');
+      }
+    }
+
+    const m = s.match(/-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/);
+    if (!m) return NaN;
+    let val = parseFloat(m[0]);
+    if (!Number.isFinite(val)) return NaN;
+    if (hemi && hemiSign < 0) val = -Math.abs(val);
+    return val;
+  }
+
+  function normalizeLongitudeDeg(lng) {
+    if (!Number.isFinite(lng)) return NaN;
+    let x = lng;
+    if (x > 180 || x < -180) {
+      x = ((x + 180) % 360 + 360) % 360 - 180;
+    }
+    return x;
+  }
+
+  function parseObserverCoordinates(latRaw, lngRaw) {
+    let lat = parseCoordinateValue(latRaw);
+    let lng = parseCoordinateValue(lngRaw);
+    lng = normalizeLongitudeDeg(lng);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+    if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
+    return { lat, lng };
+  }
+
+  function readObserverLocationFromForm() {
+    let latRaw = els.observerLat?.value;
+    let lngRaw = els.observerLon?.value;
+    const latStr = latRaw != null ? String(latRaw).trim() : '';
+    const lngStr = lngRaw != null ? String(lngRaw).trim() : '';
+    if (latStr && !lngStr && /[,;]/.test(latStr)) {
+      const parts = latStr.split(/[,;]+/).map((p) => p.trim()).filter(Boolean);
+      if (parts.length >= 2) {
+        latRaw = parts[0];
+        lngRaw = parts[1];
+      }
+    }
+    return parseObserverCoordinates(latRaw, lngRaw);
+  }
+
   async function goToObserverLocation(lat, lng) {
-    const cleanLat = Number(lat);
-    const cleanLng = Number(lng);
-    if (!Number.isFinite(cleanLat) || !Number.isFinite(cleanLng) || cleanLat < -90 || cleanLat > 90 || cleanLng < -180 || cleanLng > 180) {
+    const parsed = (lat != null && lng != null && typeof lat !== 'object')
+      ? parseObserverCoordinates(lat, lng)
+      : readObserverLocationFromForm();
+    if (!parsed) {
       if (els.observerStatus) els.observerStatus.textContent = 'Enter a valid latitude and longitude.';
       return;
     }
+    const cleanLat = parsed.lat;
+    const cleanLng = parsed.lng;
+    if (els.observerLat) els.observerLat.value = String(cleanLat);
+    if (els.observerLon) els.observerLon.value = String(cleanLng);
 
     const locationSite = {
       id: `location-${cleanLat.toFixed(6)}-${cleanLng.toFixed(6)}`,
@@ -3121,7 +6447,12 @@
     };
 
     cameraState.observerMode = false;
+    panoramaObserverFocus = null;
+    astronomyToolbarOpen = false;
     syncPanoramaButton();
+    syncTerrainViewAstroUi();
+    syncPanoramaViewControls();
+    syncViewshedHorizonVisibility();
     cameraState.observerHeightOffsetM = OBSERVER_HEIGHT_OFFSET_M;
     selectedSiteId = locationSite.id;
     selectedSite = locationSite;
@@ -3149,6 +6480,9 @@
         setStageLoadingProgress(1);
         setStageDemReady(true);
         syncPanoramaButton();
+        syncTerrainViewAstroUi();
+        syncViewshedHorizonVisibility();
+        updateCamera();
         updateNotesPanel();
         await enableRelationalMonumentsForCurrentView();
         setSidebarHidden(true);
@@ -3164,39 +6498,50 @@
   function updateCamera() {
     const observer = observerCameraLocal();
     if (observer) {
+      syncCameraProjection(true);
       const pitchRad = THREE.MathUtils.degToRad(cameraState.pitch);
       const bearingRad = THREE.MathUtils.degToRad(cameraState.bearing);
       const lookDistance = 120;
       camera.position.set(observer.x, observer.y, observer.z);
       camera.lookAt(
-        observer.x - Math.sin(bearingRad) * Math.cos(pitchRad) * lookDistance,
+        observer.x + Math.sin(bearingRad) * Math.cos(pitchRad) * lookDistance,
         observer.y + Math.sin(pitchRad) * lookDistance,
-        observer.z + Math.cos(bearingRad) * Math.cos(pitchRad) * lookDistance
+        observer.z - Math.cos(bearingRad) * Math.cos(pitchRad) * lookDistance
       );
-      els.zoom.textContent = 'observer';
+      updateTerrainMaterialUniforms();
+      updateAstroOverlay();
+      purgeViewshedVisualsUnlessPanorama();
+      els.zoom.textContent = observerZoomReadout();
       els.pitch.textContent = Math.round(cameraState.pitch);
       els.bearing.textContent = ((Math.round(cameraState.bearing) % 360) + 360) % 360;
+      syncAstroReadout();
       updateObserverStatus();
       return;
     }
+    syncCameraProjection(false);
     const pitchRad = THREE.MathUtils.degToRad(cameraState.pitch);
     const bearingRad = THREE.MathUtils.degToRad(cameraState.bearing);
     const horizontal = Math.cos(pitchRad) * cameraState.distance;
     const y = Math.sin(pitchRad) * cameraState.distance;
     camera.position.set(
-      cameraState.target.x + Math.sin(bearingRad) * horizontal,
+      cameraState.target.x - Math.sin(bearingRad) * horizontal,
       cameraState.target.y + y,
       cameraState.target.z + Math.cos(bearingRad) * horizontal
     );
     camera.lookAt(cameraState.target);
+    updateTerrainMaterialUniforms();
+    updateAstroOverlay();
+    purgeViewshedVisualsUnlessPanorama();
     els.zoom.textContent = Math.round(cameraState.distance);
     els.pitch.textContent = Math.round(cameraState.pitch);
     els.bearing.textContent = ((Math.round(cameraState.bearing) % 360) + 360) % 360;
+    syncAstroReadout();
   }
 
   function resize() {
-    const w = els.container.clientWidth || window.innerWidth;
-    const h = els.container.clientHeight || window.innerHeight;
+    if (!els.container || !renderer) return;
+    const w = Math.max(1, Math.floor(els.container.clientWidth));
+    const h = Math.max(1, Math.floor(els.container.clientHeight));
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
     renderer.setSize(w, h);
@@ -3207,11 +6552,42 @@
     }
   }
 
+  function bindStageResizeObserver() {
+    if (!els.container || stageResizeObserver || typeof ResizeObserver === 'undefined') return;
+    stageResizeObserver = new ResizeObserver(() => {
+      resize();
+      layoutStagePanels();
+    });
+    stageResizeObserver.observe(els.container);
+  }
+
+  function renderScene() {
+    let screenMask = null;
+    let horizonMap = null;
+    const profile = horizonDrawProfileData();
+    if (cameraState.observerMode && profile?.length && viewshedHorizonObserver && currentPatch) {
+      const { ring } = buildHorizonRingFromProfile(profile, viewshedHorizonObserver);
+      if (ring.length >= 2) screenMask = buildFpvHorizonScreenMaskFromRing(ring);
+      horizonMap = buildViewshedHorizonLookupTexture(profile);
+    }
+    updateTerrainHorizonMaskUniforms(terrainMesh?.material, screenMask);
+    updateSkyDomeScreenMask(screenMask);
+    astronomyOverlay?.syncHorizonClip?.(
+      screenMask,
+      renderer.domElement.width,
+      renderer.domElement.height,
+      horizonMap
+    );
+    syncFpvHorizonClearColor(!!screenMask);
+    renderer.render(scene, camera);
+  }
+
   function animate() {
     requestAnimationFrame(animate);
-    renderer.render(scene, camera);
+    if (!externalRenderLock) renderScene();
     updateFlatLabels();
     updateRelationalMarkers();
+    updateCustomMarkers();
     if (els.legendInline && els.showLegend && els.showLegend.checked) {
       const now = performance.now();
       if ((now - legendLastUpdate) > 350) {
@@ -3221,15 +6597,85 @@
     }
   }
 
+  function setExportCameraView({ bearing, pitch = 0, fov = 60, aspect = 1 }) {
+    const observer = observerCameraLocal();
+    const pitchRad = THREE.MathUtils.degToRad(pitch);
+    const bearingRad = THREE.MathUtils.degToRad(bearing);
+    const lookDistance = 120;
+    camera.fov = fov;
+    camera.aspect = aspect;
+    camera.updateProjectionMatrix();
+
+    if (observer) {
+      camera.position.set(observer.x, observer.y, observer.z);
+      camera.lookAt(
+        observer.x + Math.sin(bearingRad) * Math.cos(pitchRad) * lookDistance,
+        observer.y + Math.sin(pitchRad) * lookDistance,
+        observer.z - Math.cos(bearingRad) * Math.cos(pitchRad) * lookDistance
+      );
+      return;
+    }
+
+    const horizontal = Math.cos(pitchRad) * cameraState.distance;
+    const y = Math.sin(pitchRad) * cameraState.distance;
+    camera.position.set(
+      cameraState.target.x - Math.sin(bearingRad) * horizontal,
+      cameraState.target.y + y,
+      cameraState.target.z + Math.cos(bearingRad) * horizontal
+    );
+    camera.lookAt(cameraState.target);
+  }
+
+  function skyscapeExportState() {
+    const observer = observerCameraLocal();
+    return {
+      ready: Boolean(currentPatch && (currentFocus || selectedSite)),
+      title: selectedSite?.name || selectedSite?.Name || selectedSite?.monumentClass || 'Skyscape Landscape',
+      focus: currentFocus ? { lat: currentFocus.lat, lng: currentFocus.lng } : null,
+      observer: observer ? { ...observer } : null,
+      baseElevationM: Number(baseCenterElev || 0),
+      verticalExaggeration,
+      observerTerrainElevationM: observer
+        ? (observer.groundY / Math.max(verticalExaggeration, 0.0001)) + Number(baseCenterElev || 0)
+        : Number(baseCenterElev || 0),
+      displaySettings: { ...displaySettings },
+      terrainPaintSettings: { ...terrainPaintSettings },
+      rendererSize: renderer.getSize(new THREE.Vector2()),
+      pixelRatio: renderer.getPixelRatio()
+    };
+  }
+
+  window.SkyscapeRuntime = {
+    THREE,
+    renderer,
+    scene,
+    camera,
+    getSkyDome: () => skyDome,
+    getExportState: skyscapeExportState,
+    setPanoramaMode,
+    setExportCameraView,
+    updateCamera,
+    resize,
+    render: () => renderScene(),
+    setExternalRenderLock: (locked) => { externalRenderLock = Boolean(locked); },
+    setStageStatus: (message) => {
+      if (els.nmsStatus && message) els.nmsStatus.textContent = message;
+      if (els.stageLoadingText && message && !siteDemReady) els.stageLoadingText.textContent = message;
+    },
+    isPanoramaView: () => !!cameraState.observerMode
+  };
+
   function setSidebarHidden(hidden) {
     const shell = document.querySelector('.app-shell');
     if (!shell) return;
     shell.classList.toggle('sidebar-hidden', !!hidden);
     if (toggleSidebarBtn) toggleSidebarBtn.setAttribute('aria-pressed', hidden ? 'false' : 'true');
     if (sidebarPeekBtn) sidebarPeekBtn.setAttribute('aria-hidden', hidden ? 'false' : 'true');
-    // Resize after the transition so the renderer/camera match the new viewport.
-    window.setTimeout(resize, 260);
-    resize();
+    requestAnimationFrame(() => {
+      resize();
+      requestAnimationFrame(resize);
+    });
+    window.setTimeout(resize, 280);
   }
 
   let sidebarPeekTimer = 0;
@@ -3249,17 +6695,71 @@
     if (!shell) return;
     shell.classList.toggle('controls-hidden', !!hidden);
     if (hideControlsBtn) hideControlsBtn.setAttribute('aria-pressed', hidden ? 'true' : 'false');
+    updateStageViewCaption();
     // Controls affect available viewport; keep renderer in sync.
     window.setTimeout(resize, 60);
     resize();
   }
 
   function syncPanoramaButton() {
-    if (!panoramaViewBtn) return;
-    panoramaViewBtn.classList.toggle('active', !!cameraState.observerMode);
-    panoramaViewBtn.setAttribute('aria-pressed', cameraState.observerMode ? 'true' : 'false');
-    panoramaViewBtn.setAttribute('data-tip', cameraState.observerMode ? 'Exit panorama view' : 'Panorama first-person view');
-    panoramaViewBtn.setAttribute('aria-label', cameraState.observerMode ? 'Exit panorama view' : 'Panorama first-person view');
+    syncAstronomyToolbar();
+  }
+
+  function syncPanoramaSceneVisuals() {
+    if (terrainMesh) terrainMesh.visible = true;
+    updateSkyDomeViewshedMask();
+  }
+
+  function syncPanoramaViewControls() {
+    const fpv = !!cameraState.observerMode;
+    document.querySelectorAll('.controls button[data-action]').forEach((btn) => {
+      const action = btn.getAttribute('data-action');
+      if (!FPV_LOCKED_MOVE_ACTIONS.has(action)) return;
+      btn.classList.toggle('fpv-location-locked', fpv);
+      btn.setAttribute('aria-disabled', fpv ? 'true' : 'false');
+    });
+    if (els.observerLat) els.observerLat.disabled = false;
+    if (els.observerLon) els.observerLon.disabled = false;
+    const observerSubmit = els.observerForm?.querySelector('button[type="submit"]');
+    observerSubmit?.removeAttribute('disabled');
+    els.observerForm?.classList.remove('fpv-location-locked');
+  }
+
+  function syncTerrainViewAstroUi() {
+    const panorama = !!cameraState.observerMode;
+    const archBtn = document.querySelector('button[data-toggle="astro-show-archaeolines"]');
+    const compassBtn = document.querySelector('button[data-toggle="astro-show-horizon-compass"]');
+    const horizonRelBtn = document.querySelector('button[data-toggle="show-horizon-relational"]');
+    for (const btn of [els.toggleDatetimePanel, archBtn, compassBtn, horizonRelBtn, els.fpvHorizonHires, els.fpvHorizonSuper, els.exportStellarium, els.toggleCustomLabel]) {
+      if (!btn) continue;
+      btn.classList.toggle('panorama-only-disabled', !panorama);
+      btn.setAttribute('aria-disabled', panorama ? 'false' : 'true');
+    }
+    if (els.horizonResKey) {
+      els.horizonResKey.disabled = false;
+      els.horizonResKey.closest('.coord-row')?.classList.remove('panorama-only-disabled');
+    }
+    if (els.showHorizonRelational) {
+      els.showHorizonRelational.disabled = !panorama;
+      els.showHorizonRelational.closest('.layer-option')?.classList.toggle('panorama-only-disabled', !panorama);
+    }
+    if (!panorama) {
+      cancelViewshedHorizonCompute();
+      clearHorizonRelationalMarkers();
+      if (els.showHorizonRelational) {
+        els.showHorizonRelational.checked = !!showHorizonRelational;
+      }
+      if (datetimePanelOpen || customLabelPanelOpen) activateStagePanel(null);
+      setCustomLabelPickMode(false);
+      clearCustomLabels();
+      astronomyToolbarOpen = false;
+      syncAstronomyToolbar();
+    }
+    syncPanoramaSceneVisuals();
+    syncPanoramaViewControls();
+    syncFpvCenterControls();
+    astronomyOverlay?.updateOverlay();
+    applyDisplaySettings();
   }
 
   async function setPanoramaMode(enabled) {
@@ -3274,22 +6774,36 @@
         return;
       }
       currentFocus = focus;
+      panoramaObserverFocus = { lat: focus.lat, lng: focus.lng };
       cameraState.observerMode = true;
       cameraState.observerHeightOffsetM = OBSERVER_HEIGHT_OFFSET_M;
+      cameraState.fov = OBSERVER_FOV_DEFAULT;
       cameraState.pitch = 0;
       if (els.observerLat) els.observerLat.value = String(focus.lat);
       if (els.observerLon) els.observerLon.value = String(focus.lng);
       syncPanoramaButton();
+      syncTerrainViewAstroUi();
       if (!currentPatch) await buildTerrain(currentFocus);
+      rebuildTerrainHeights();
       updateFocusTarget();
       updateCamera();
       updateObserverStatus();
+      syncViewshedHorizonVisibility();
+      const obs = getHorizonObserverFocus();
+      const forceViewshed = !horizonCacheValidForObserver(obs, normalizeHorizonResKey(horizonResKey));
+      scheduleViewshedHorizonBackground(null, forceViewshed);
       return;
     }
 
     cameraState.observerMode = false;
+    panoramaObserverFocus = null;
     cameraState.pitch = Math.max(8, cameraState.pitch);
+    astronomyToolbarOpen = false;
     syncPanoramaButton();
+    syncTerrainViewAstroUi();
+    rebuildTerrainHeights();
+    cancelViewshedHorizonCompute();
+    clearViewshedHorizonVisuals();
     updateFocusTarget();
     updateCamera();
   }
@@ -3423,11 +6937,21 @@
 
   function openSavedViewsDb() {
     return new Promise((resolve, reject) => {
-      const req = indexedDB.open(SAVED_VIEWS_DB, 2);
+      const req = indexedDB.open(SAVED_VIEWS_DB, 4);
       req.onupgradeneeded = () => {
         const db = req.result;
+        const oldVersion = Number(req.oldVersion || 0);
+        if (oldVersion > 0 && oldVersion < 4) {
+          try {
+            if (db.objectStoreNames.contains('scenes')) db.deleteObjectStore('scenes');
+          } catch (_) {}
+          try {
+            if (db.objectStoreNames.contains(SAVED_VIEWS_STORE)) db.deleteObjectStore(SAVED_VIEWS_STORE);
+          } catch (_) {}
+        }
         if (!db.objectStoreNames.contains(SAVED_VIEWS_STORE)) {
-          db.createObjectStore(SAVED_VIEWS_STORE, { keyPath: 'id' });
+          const store = db.createObjectStore(SAVED_VIEWS_STORE, { keyPath: 'id' });
+          try { store.createIndex('viewType', 'viewType', { unique: false }); } catch (_) {}
         }
         if (!db.objectStoreNames.contains(SETTINGS_STORE)) {
           db.createObjectStore(SETTINGS_STORE, { keyPath: 'id' });
@@ -3438,67 +6962,96 @@
     });
   }
 
+  function idbRequestToPromise(request) {
+    return new Promise((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error || new Error('Saved views request failed.'));
+    });
+  }
+
   async function savedViewsTx(mode, fn, storeName = SAVED_VIEWS_STORE) {
     const db = await openSavedViewsDb();
     return new Promise((resolve, reject) => {
       const tx = db.transaction(storeName, mode);
       const store = tx.objectStore(storeName);
-      let out;
-      tx.oncomplete = () => { db.close(); resolve(out); };
-      tx.onerror = () => { db.close(); reject(tx.error || new Error('Saved views database error.')); };
-      out = fn(store);
+      let result;
+      let settled = false;
+      const finishOk = () => {
+        if (settled) return;
+        settled = true;
+        db.close();
+        resolve(result);
+      };
+      const finishErr = (err) => {
+        if (settled) return;
+        settled = true;
+        db.close();
+        reject(err || new Error('Saved views database error.'));
+      };
+      tx.oncomplete = () => finishOk();
+      tx.onerror = () => finishErr(tx.error);
+      tx.onabort = () => finishErr(tx.error || new Error('Saved views transaction aborted.'));
+      try {
+        const out = fn(store);
+        if (out && typeof out.then === 'function') {
+          out.then((value) => { result = value; }, (err) => {
+            try { tx.abort(); } catch (_) {}
+            finishErr(err);
+          });
+        } else {
+          result = out;
+        }
+      } catch (err) {
+        finishErr(err);
+      }
     });
   }
 
   async function getSavedViews() {
-    return savedViewsTx('readonly', (store) => {
-      const req = store.getAll();
-      return new Promise((resolve, reject) => {
-        req.onsuccess = () => resolve(req.result || []);
-        req.onerror = () => reject(req.error);
-      });
-    });
+    return savedViewsTx('readonly', (store) => idbRequestToPromise(store.getAll()).then((rows) => rows || []));
   }
 
   async function putSavedView(view) {
-    return savedViewsTx('readwrite', (store) => store.put(view));
+    return savedViewsTx('readwrite', (store) => idbRequestToPromise(store.put(view)));
   }
 
   async function deleteSavedView(id) {
-    return savedViewsTx('readwrite', (store) => store.delete(id));
+    return savedViewsTx('readwrite', (store) => idbRequestToPromise(store.delete(id)));
   }
 
   async function clearSavedViews() {
-    return savedViewsTx('readwrite', (store) => store.clear());
+    return savedViewsTx('readwrite', (store) => idbRequestToPromise(store.clear()));
   }
 
   async function getMonumentSelectionSetting() {
-    return savedViewsTx('readonly', (store) => {
-      const req = store.get(MONUMENT_SELECTION_SETTING_ID);
-      return new Promise((resolve, reject) => {
-        req.onsuccess = () => resolve(req.result || null);
-        req.onerror = () => reject(req.error);
-      });
-    }, SETTINGS_STORE);
+    return savedViewsTx('readonly', (store) => idbRequestToPromise(store.get(MONUMENT_SELECTION_SETTING_ID)).then((row) => row || null), SETTINGS_STORE);
   }
 
   async function saveMonumentSelectionSetting() {
     if (!monumentSelectionStorageEnabled()) return;
     const classes = Array.from(selectedMonumentClasses.values()).map(String).filter(Boolean);
-    await savedViewsTx('readwrite', (store) => store.put({
+    await savedViewsTx('readwrite', (store) => idbRequestToPromise(store.put({
       id: MONUMENT_SELECTION_SETTING_ID,
       classes,
       updatedAt: Date.now()
-    }), SETTINGS_STORE);
+    })), SETTINGS_STORE);
   }
 
   async function clearMonumentSelectionSetting() {
-    await savedViewsTx('readwrite', (store) => store.delete(MONUMENT_SELECTION_SETTING_ID), SETTINGS_STORE);
+    await savedViewsTx('readwrite', (store) => idbRequestToPromise(store.delete(MONUMENT_SELECTION_SETTING_ID)), SETTINGS_STORE);
+  }
+
+  function cloneForStorage(value) {
+    try {
+      return JSON.parse(JSON.stringify(value));
+    } catch (_) {
+      return value;
+    }
   }
 
   function compactSiteForState(site) {
     if (!site) return null;
-    const props = site.props || {};
+    const props = cloneForStorage(site.props || {});
     return {
       id: site.id || monumentStableKey(props, site.lng, site.lat),
       smr: site.smr || props.SMRS || props.SMRNo || props.SMR_NO || props.SMR || '',
@@ -3511,27 +7064,66 @@
   }
 
   function currentMonumentMode() {
+    if (showHorizonRelational) return 'horizon';
     if (showAllMonuments) return 'all';
     if (showAllRelational) return 'relational';
     if (showRelatedMonuments) return 'type';
     return null;
   }
 
+  function normalizeViewType(state) {
+    if (state?.viewType === 'fpv' || state?.viewType === 'default') return state.viewType;
+    return state?.camera?.observerMode ? 'fpv' : 'default';
+  }
+
+  function captureAstroToggleState() {
+    const archBtn = document.querySelector('button[data-toggle="astro-show-archaeolines"]');
+    return {
+      showArchaeolines: !!(els.astroShowArchaeolines?.checked ?? archBtn?.classList.contains('active')),
+      showHorizonRelational: !!showHorizonRelational
+    };
+  }
+
+  function applyAstroToggleState(astroToggles) {
+    if (!astroToggles || typeof astroToggles !== 'object') return;
+    if (typeof astroToggles.showArchaeolines === 'boolean') {
+      if (els.astroShowArchaeolines) {
+        els.astroShowArchaeolines.checked = astroToggles.showArchaeolines;
+        dispatchInputChange(els.astroShowArchaeolines);
+      }
+      const archBtn = document.querySelector('button[data-toggle="astro-show-archaeolines"]');
+      if (archBtn) {
+        archBtn.classList.toggle('active', astroToggles.showArchaeolines);
+        archBtn.setAttribute('aria-pressed', astroToggles.showArchaeolines ? 'true' : 'false');
+      }
+    }
+  }
+
   function captureViewState(name = '') {
     const shell = document.querySelector('.app-shell');
-    return {
-      version: 1,
+    const viewType = currentViewType();
+    let monumentMode = currentMonumentMode();
+    if (viewType === 'fpv' && showHorizonRelational) monumentMode = 'horizon';
+    const state = {
+      version: 2,
+      viewType,
       name: String(name || '').trim(),
       savedAt: Date.now(),
       selectedSite: compactSiteForState(selectedSite),
       focus: currentFocus ? { lat: Number(currentFocus.lat), lng: Number(currentFocus.lng) } : null,
-      camera: { pitch: cameraState.pitch, bearing: cameraState.bearing, distance: cameraState.distance },
+      camera: {
+        pitch: cameraState.pitch,
+        bearing: cameraState.bearing,
+        distance: cameraState.distance,
+        fov: clampObserverFov(cameraState.fov),
+        observerMode: viewType === 'fpv'
+      },
       imageryKey,
       demAreaKey,
       verticalExaggeration,
       activeType,
       selectedClasses: Array.from(selectedMonumentClasses.values()),
-      monumentMode: currentMonumentMode(),
+      monumentMode,
       ranges: { related: relatedRangeM, allRelational: allRelationalRangeM },
       toggles: {
         showNotes: !!els.showNotes?.checked,
@@ -3547,6 +7139,59 @@
         active: item.id === activeLabelId
       }))
     };
+    if (viewType === 'fpv') {
+      state.datetime = captureDateTimeState();
+      state.horizonResKey = normalizeHorizonResKey(horizonResKey);
+      state.astroToggles = captureAstroToggleState();
+      state.customLabels = customLabels.map((c) => ({
+        id: c.id,
+        heading: c.heading,
+        subText: c.subText,
+        azimuth: c.azimuth,
+        altitude: c.altitude,
+        distM: c.distM,
+        active: c.id === activeLabelId
+      }));
+    }
+    return state;
+  }
+
+  async function rebuildAstronomyViewAfterRestore(state, monumentMode) {
+    if (!cameraState.observerMode || !currentPatch) return;
+    const observer = getHorizonObserverFocus();
+    if (!observer) return;
+    const token = ++viewRestoreToken;
+    const wantsHorizonRelational = monumentMode === 'horizon';
+    const resKey = normalizeHorizonResKey(state?.horizonResKey || horizonResKey);
+    horizonResKey = resKey;
+    if (els.horizonResKey) els.horizonResKey.value = resKey;
+    setHorizonDrawButtonsActive(resKey === 'hires' || resKey === 'super' ? resKey : null);
+
+    rebuildTerrainHeights();
+    syncTerrainViewAstroUi();
+    syncFpvCenterControls();
+    syncViewshedHorizonVisibility();
+    applyDateTimeState(state?.datetime);
+    astronomyOverlay?.clearCache?.();
+    astronomyOverlay?.updateOverlay?.(false, { forceBodies: true });
+
+    showHorizonCalcPanel(true);
+    setHorizonCalcProgress('Rebuilding astronomy horizon viewshed…', 0.03);
+
+    suppressHorizonRelationalAutoLoad = true;
+    try {
+      await scheduleViewshedHorizonBackground(resKey, true);
+    } catch (e) {
+      if (token === viewRestoreToken) {
+        console.warn('[view-restore] viewshed rebuild failed', e);
+      }
+    } finally {
+      suppressHorizonRelationalAutoLoad = false;
+    }
+    if (token !== viewRestoreToken) return;
+
+    if (wantsHorizonRelational) await loadHorizonRelationalMarkers();
+    astronomyOverlay?.updateOverlay?.(false, { forceBodies: true });
   }
 
   function encodeViewState(state) {
@@ -3563,14 +7208,14 @@
     return url.toString();
   }
 
-  function promptSavedViewName(defaultName) {
+  function promptSavedViewName(defaultName, { title = 'Save View', inputLabel = 'Saved view name' } = {}) {
     return new Promise((resolve) => {
       const overlay = document.createElement('div');
       overlay.className = 'saved-view-pop';
       overlay.innerHTML = `
-        <div class="saved-view-pop-card" role="dialog" aria-modal="true" aria-label="Save view">
-          <div class="saved-view-pop-title">Save View</div>
-          <input class="saved-view-pop-input" type="text" maxlength="80" value="${escapeHtml(defaultName || 'Saved View')}" aria-label="Saved view name">
+        <div class="saved-view-pop-card" role="dialog" aria-modal="true" aria-label="${escapeHtml(title)}">
+          <div class="saved-view-pop-title">${escapeHtml(title)}</div>
+          <input class="saved-view-pop-input" type="text" maxlength="80" value="${escapeHtml(defaultName || 'Saved View')}" aria-label="${escapeHtml(inputLabel)}">
           <div class="saved-view-pop-actions">
             <button type="button" data-cancel>Cancel</button>
             <button type="button" data-save>Save</button>
@@ -3582,11 +7227,29 @@
         overlay.remove();
         resolve(value);
       };
-      overlay.querySelector('[data-cancel]')?.addEventListener('click', () => close(null));
-      overlay.querySelector('[data-save]')?.addEventListener('click', () => close(String(input?.value || '').trim()));
+      const commitName = () => {
+        const value = String(input?.value || '').trim();
+        if (!value) {
+          input?.focus();
+          input?.select();
+          return;
+        }
+        close(value);
+      };
+      overlay.querySelector('[data-cancel]')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        close(null);
+      });
+      overlay.querySelector('[data-save]')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        commitName();
+      });
       overlay.addEventListener('keydown', (e) => {
         if (e.key === 'Escape') close(null);
-        if (e.key === 'Enter') close(String(input?.value || '').trim());
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          commitName();
+        }
       });
       overlay.addEventListener('click', (e) => {
         if (e.target === overlay) close(null);
@@ -3597,19 +7260,118 @@
     });
   }
 
-  async function saveCurrentView() {
+  async function saveCurrentView(anchor = saveViewBtn) {
     if (!savedViewsEnabled()) {
       setSavedViewsStatus('Stored views are disabled.');
+      showCopiedPop(anchor, 'Stored views disabled');
       return;
     }
-    const fallback = selectedSite ? (titleCaseWords(shortName(selectedSite.townland)) || 'Saved View') : 'Saved View';
+    const viewType = currentViewType();
+    const fallback = selectedSite
+      ? (titleCaseWords(shortName(selectedSite.townland)) || 'Saved View')
+      : (viewType === 'fpv' ? 'FP View' : 'Saved View');
     const name = await promptSavedViewName(fallback);
     if (!name) return;
-    const state = captureViewState(name);
-    const item = { id: `view-${Date.now()}-${Math.random().toString(16).slice(2)}`, name: state.name, savedAt: state.savedAt, state };
-    await putSavedView(item);
+    try {
+      const state = cloneForStorage(captureViewState(name));
+      const item = {
+        id: `view-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        viewType: state.viewType,
+        name: state.name,
+        savedAt: state.savedAt,
+        state
+      };
+      await putSavedView(item);
+      await renderSavedViewsList();
+      setSavedViewsStatus(`Saved "${state.name}" (${viewTypeLabel(viewType)}).`);
+      showCopiedPop(anchor, 'View Saved');
+    } catch (err) {
+      console.warn('Save view failed', err);
+      setSavedViewsStatus(`Save failed: ${err?.message || err}`);
+      showCopiedPop(anchor, 'Save failed');
+    }
+  }
+
+  function downloadJsonFile(filename, obj) {
+    const text = JSON.stringify(obj, null, 2);
+    const blob = new Blob([text], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 3000);
+  }
+
+  function slugifyViewsFilename(name) {
+    const slug = String(name || 'views')
+      .trim()
+      .normalize('NFKD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-zA-Z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 72);
+    return slug || 'views';
+  }
+
+  async function exportSavedViewsToJson(anchor = null) {
+    try {
+      const rows = await getSavedViews();
+      const stamp = new Date().toISOString().slice(0, 10);
+      downloadJsonFile(`archaeoscapes-views-${slugifyViewsFilename(stamp)}.json`, {
+        kind: 'views',
+        version: 2,
+        exportedAt: Date.now(),
+        views: rows.map((row) => ({
+          name: row.name,
+          viewType: row.viewType || normalizeViewType(row.state),
+          savedAt: row.savedAt,
+          state: row.state
+        }))
+      });
+      setSavedViewsStatus(`Exported ${rows.length} view${rows.length === 1 ? '' : 's'}.`);
+      showCopiedPop(anchor, 'Exported');
+    } catch (err) {
+      console.warn('Export views failed', err);
+      setSavedViewsStatus(`Export failed: ${err?.message || err}`);
+      showCopiedPop(anchor, 'Export failed');
+    }
+  }
+
+  async function importViewsFromJsonFile(file, { openAfter = false } = {}) {
+    const text = await file.text();
+    const parsed = JSON.parse(text);
+    const rows = Array.isArray(parsed?.views) ? parsed.views : (parsed?.state ? [parsed] : []);
+    if (!rows.length) throw new Error('No views found in file');
+    let imported = 0;
+    for (const raw of rows) {
+      const state = raw?.state || raw;
+      if (!state || typeof state !== 'object' || !state.camera) continue;
+      const viewType = raw?.viewType || normalizeViewType(state);
+      state.viewType = viewType;
+      state.version = 2;
+      const name = String(raw?.name || state.name || 'Imported View').trim() || 'Imported View';
+      state.name = name;
+      const savedAt = Number(raw?.savedAt || state.savedAt || Date.now()) || Date.now();
+      await putSavedView({
+        id: `view-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        viewType,
+        name,
+        savedAt,
+        state: cloneForStorage(state)
+      });
+      imported += 1;
+    }
+    if (!imported) throw new Error('No valid views in file');
     await renderSavedViewsList();
-    setSavedViewsStatus(`Saved "${state.name}".`);
+    setSavedViewsStatus(`Imported ${imported} view${imported === 1 ? '' : 's'}.`);
+    if (openAfter && rows[0]) {
+      const state = rows[0]?.state || rows[0];
+      if (state?.camera) await restoreViewState(state);
+    }
+    return imported;
   }
 
   function findMarkerForStableKey(stableKey) {
@@ -3644,8 +7406,58 @@
     updateNotesPanel();
   }
 
+  function dispatchInputChange(el) {
+    if (!el) return;
+    try { el.dispatchEvent(new Event('input', { bubbles: true })); } catch (_) {}
+    try { el.dispatchEvent(new Event('change', { bubbles: true })); } catch (_) {}
+  }
+
+  function shortestBearingDeltaDeg(fromDeg, toDeg) {
+    return ((Number(toDeg) - Number(fromDeg) + 540) % 360) - 180;
+  }
+
+  function animateCameraTo(targetCamera, durationMs = 480) {
+    if (!targetCamera) {
+      updateCamera();
+      return;
+    }
+    cameraAnimToken += 1;
+    const token = cameraAnimToken;
+    if (cameraAnimRaf) cancelAnimationFrame(cameraAnimRaf);
+    const start = {
+      pitch: Number(cameraState.pitch),
+      bearing: Number(cameraState.bearing),
+      distance: Number(cameraState.distance),
+      fov: clampObserverFov(cameraState.fov)
+    };
+    const end = {
+      pitch: isFinite(targetCamera.pitch) ? Number(targetCamera.pitch) : start.pitch,
+      bearing: isFinite(targetCamera.bearing) ? Number(targetCamera.bearing) : start.bearing,
+      distance: isFinite(targetCamera.distance) ? Number(targetCamera.distance) : start.distance,
+      fov: targetCamera.fov != null && isFinite(targetCamera.fov) ? clampObserverFov(targetCamera.fov) : start.fov
+    };
+    const bearingDelta = shortestBearingDeltaDeg(start.bearing, end.bearing);
+    const t0 = performance.now();
+    const easeInOut = (t) => (t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2);
+    const tick = () => {
+      if (token !== cameraAnimToken) return;
+      const u = Math.min(1, (performance.now() - t0) / Math.max(120, durationMs));
+      const e = easeInOut(u);
+      cameraState.pitch = start.pitch + (end.pitch - start.pitch) * e;
+      cameraState.bearing = start.bearing + bearingDelta * e;
+      cameraState.distance = start.distance + (end.distance - start.distance) * e;
+      cameraState.fov = start.fov + (end.fov - start.fov) * e;
+      updateCamera();
+      if (u < 1) cameraAnimRaf = requestAnimationFrame(tick);
+      else cameraAnimRaf = 0;
+    };
+    cameraAnimRaf = requestAnimationFrame(tick);
+  }
+
   async function restoreViewState(state) {
     if (!state || typeof state !== 'object') return;
+    const targetViewType = normalizeViewType(state);
+    const monumentMode = resolveMonumentModeFromViewState(state);
     if (Array.isArray(state.selectedClasses) && state.selectedClasses.length) {
       selectedMonumentClasses = new Set(state.selectedClasses.map(String).filter(Boolean));
       await cacheIconsForSelected();
@@ -3653,13 +7465,12 @@
     }
     activeType = state.activeType || activeType;
     imageryKey = state.imageryKey || imageryKey;
+    syncImageryRadioButtons();
+    refreshSurfaceToolbar();
     demAreaKey = state.demAreaKey === 'double' ? 'double' : 'standard';
     verticalExaggeration = Number(state.verticalExaggeration ?? verticalExaggeration) || 0;
     if (els.heightSlider) els.heightSlider.value = String(verticalExaggeration);
     if (els.heightValue) els.heightValue.textContent = `${verticalExaggeration.toFixed(1)}x`;
-    cameraState.pitch = Number(state.camera?.pitch ?? cameraState.pitch);
-    cameraState.bearing = Number(state.camera?.bearing ?? cameraState.bearing);
-    cameraState.distance = Number(state.camera?.distance ?? cameraState.distance);
     relatedRangeM = Number(state.ranges?.related ?? relatedRangeM) || 0;
     allRelationalRangeM = Number(state.ranges?.allRelational ?? allRelationalRangeM) || 0;
     if (els.relatedRange) els.relatedRange.value = String(relatedRangeM);
@@ -3672,21 +7483,63 @@
     if (els.showAllLabels) els.showAllLabels.checked = showAllLabels;
     setControlsHidden(!!state.toggles?.controlsHidden);
     setSidebarHidden(!!state.toggles?.sidebarHidden);
-    const mode = state.monumentMode || null;
-    showRelatedMonuments = mode === 'type';
-    showAllRelational = mode === 'relational';
-    showAllMonuments = mode === 'all';
-    if (els.showRelatedMonuments) els.showRelatedMonuments.checked = showRelatedMonuments;
-    if (els.showAllRelational) els.showAllRelational.checked = showAllRelational;
-    if (els.showAllMonuments) els.showAllMonuments.checked = showAllMonuments;
-    normalizeExclusiveMonumentMode();
+
+    const savedCamera = {
+      pitch: Number(state.camera?.pitch ?? cameraState.pitch),
+      bearing: Number(state.camera?.bearing ?? cameraState.bearing),
+      distance: Number(state.camera?.distance ?? cameraState.distance),
+      fov: state.camera?.fov != null ? clampObserverFov(state.camera.fov) : clampObserverFov(cameraState.fov),
+      observerMode: targetViewType === 'fpv'
+    };
+
+    clearAllMonumentMarkerLayers();
+    setMonumentModeFlags(monumentMode);
+    cameraState.pitch = savedCamera.pitch;
+    cameraState.bearing = savedCamera.bearing;
+    cameraState.distance = savedCamera.distance;
+    cameraState.fov = savedCamera.fov;
+    cameraState.observerMode = savedCamera.observerMode;
+    if (targetViewType === 'fpv') ensurePanoramaObserverFocusFromState(state);
+    syncPanoramaButton();
+
     const site = state.selectedSite || (state.focus ? { id: `view-${state.focus.lat},${state.focus.lng}`, lat: state.focus.lat, lng: state.focus.lng, townland: '', county: '', smr: '', props: {} } : null);
     if (site && isFinite(site.lat) && isFinite(site.lng)) {
-      await goToSite(site);
+      await goToSite(site, { skipDefaultMonuments: true, viewRestore: true });
+
+      clearAllMonumentMarkerLayers();
+      setMonumentModeFlags(monumentMode);
+      cameraState.pitch = savedCamera.pitch;
+      cameraState.bearing = savedCamera.bearing;
+      cameraState.distance = savedCamera.distance;
+      cameraState.fov = savedCamera.fov;
+      cameraState.observerMode = savedCamera.observerMode;
+      if (targetViewType === 'fpv') ensurePanoramaObserverFocusFromState(state);
+      syncPanoramaButton();
+      syncTerrainViewAstroUi();
+      syncPanoramaSceneVisuals();
+      syncViewshedHorizonVisibility();
+      updateCamera();
+
+      if (targetViewType === 'fpv') {
+        if (state.horizonResKey) {
+          horizonResKey = normalizeHorizonResKey(state.horizonResKey);
+          if (els.horizonResKey) els.horizonResKey.value = horizonResKey;
+        }
+        applyAstroToggleState(state.astroToggles);
+        applyDateTimeState(state?.datetime);
+        await rebuildAstronomyViewAfterRestore(state, monumentMode);
+        if (monumentMode !== 'horizon') await reloadMonumentMarkersForCurrentMode();
+      } else {
+        await reloadMonumentMarkersForCurrentMode();
+        astronomyOverlay?.updateOverlay?.(false, { forceBodies: true });
+      }
+
       restoreOpenLabels(state);
+      if (targetViewType === 'fpv') restoreCustomLabels(state);
       updateLegendPanel();
     } else {
       updateCamera();
+      astronomyOverlay?.updateOverlay?.(false, { forceBodies: true });
     }
   }
 
@@ -3707,6 +7560,7 @@
     views.sort((a, b) => Number(b.savedAt || 0) - Number(a.savedAt || 0));
     setSavedViewsStatus('');
     for (const view of views) {
+      const viewType = view.viewType || normalizeViewType(view.state);
       const row = document.createElement('button');
       row.type = 'button';
       row.className = 'saved-view-item';
@@ -3715,7 +7569,7 @@
       const monumentClass = String(savedProps.MONUMENT_CLASS || view.state?.activeType || '').trim();
       const smr = String(savedSite.smr || savedProps.SMRS || savedProps.SMRNo || '').trim();
       const county = titleCaseWords(savedSite.county || savedProps.COUNTY || '');
-      const meta = [smr, county].filter(Boolean).join(' · ');
+      const meta = [viewTypeLabel(viewType), smr, county].filter(Boolean).join(' · ');
       row.innerHTML = `
         <span class="saved-icon megicon"></span>
         <span><span class="saved-name">${escapeHtml(view.name || 'Saved view')}</span><span class="saved-meta">${escapeHtml(meta)}</span></span>
@@ -3725,11 +7579,23 @@
       row.addEventListener('click', async (e) => {
         if (e.target.closest('.saved-view-delete')) {
           e.stopPropagation();
-          await deleteSavedView(view.id);
-          await renderSavedViewsList();
+          try {
+            await deleteSavedView(view.id);
+            await renderSavedViewsList();
+            setSavedViewsStatus(`Deleted "${view.name || 'Saved view'}".`);
+          } catch (err) {
+            console.warn('Delete saved view failed', err);
+            setSavedViewsStatus(`Delete failed: ${err?.message || err}`);
+          }
           return;
         }
-        await restoreViewState(view.state);
+        try {
+          await restoreViewState(view.state);
+          setSavedViewsStatus(`Restored "${view.name || 'Saved view'}".`);
+        } catch (err) {
+          console.warn('Restore saved view failed', err);
+          setSavedViewsStatus(`Restore failed: ${err?.message || err}`);
+        }
       });
       els.savedViewsList.appendChild(row);
     }
@@ -3749,6 +7615,34 @@
     const div = document.createElement('div');
     div.textContent = String(s ?? '');
     return div.innerHTML;
+  }
+
+  async function promptImportViewFile(anchor = null) {
+    try {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = 'application/json,.json';
+      input.style.display = 'none';
+      input.addEventListener('change', async () => {
+        const file = input.files && input.files[0];
+        input.remove();
+        if (!file) return;
+        try {
+          await importViewsFromJsonFile(file, { openAfter: true });
+          showCopiedPop(anchor, 'Imported');
+        } catch (err) {
+          console.warn('Import views failed', err);
+          setSavedViewsStatus(`Import failed: ${err?.message || err}`);
+          showCopiedPop(anchor, 'Import failed');
+        }
+      }, { once: true });
+      document.body.appendChild(input);
+      input.click();
+    } catch (err) {
+      console.warn('Import views failed', err);
+      setSavedViewsStatus(`Import failed: ${err?.message || err}`);
+      showCopiedPop(anchor, 'Import failed');
+    }
   }
 
   bindContinuousActionButtons(document.querySelector('.controls'), applyCameraAction);
@@ -3776,6 +7670,12 @@
     sidebarPeekBtn.addEventListener('blur', cancelScheduledSidebarOpen);
     sidebarPeekBtn.setAttribute('aria-hidden', 'true');
   }
+  const sidebarEl = document.querySelector('.sidebar');
+  if (sidebarEl) {
+    sidebarEl.addEventListener('transitionend', (e) => {
+      if (e.propertyName === 'width') resize();
+    });
+  }
   if (hideControlsBtn) {
     hideControlsBtn.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -3793,13 +7693,19 @@
     document.addEventListener('webkitfullscreenchange', syncFullscreenButton);
     syncFullscreenButton();
   }
-  if (panoramaViewBtn) {
-    panoramaViewBtn.addEventListener('click', async (e) => {
+  if (els.toggleFpv) {
+    els.toggleFpv.addEventListener('click', async (e) => {
       e.stopPropagation();
-      await setPanoramaMode(!cameraState.observerMode);
+      await toggleFpvMode();
     });
-    syncPanoramaButton();
   }
+  if (els.toggleAstronomy) {
+    els.toggleAstronomy.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      await toggleAstronomyMode();
+    });
+  }
+  syncAstronomyToolbar();
   if (helpViewBtn) {
     helpViewBtn.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -3820,6 +7726,10 @@
     e.stopPropagation();
     setHelpOpen(true);
   });
+  loadingImportViewBtn?.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    await promptImportViewFile(e.currentTarget);
+  });
   helpCloseBtn?.addEventListener('click', (e) => {
     e.stopPropagation();
     setHelpOpen(false);
@@ -3835,20 +7745,30 @@
       startOrbitOnce();
     });
   }
-  if (saveViewBtn) {
-    saveViewBtn.addEventListener('click', async (e) => {
-      e.stopPropagation();
-      await saveCurrentView();
-    });
-  }
-  if (copyViewBtn) {
-    copyViewBtn.addEventListener('click', async (e) => {
-      e.stopPropagation();
-      const state = captureViewState();
+  saveViewBtn?.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    await saveCurrentView(e.currentTarget);
+  });
+  copyViewBtn?.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    try {
+      const state = cloneForStorage(captureViewState());
       await copyText(shareUrlForState(state));
-      showCopiedPop(e.currentTarget);
-    });
-  }
+      showCopiedPop(e.currentTarget, 'Copied !');
+    } catch (err) {
+      console.warn('Copy view URL failed', err);
+      setSavedViewsStatus(`Copy failed: ${err?.message || err}`);
+      showCopiedPop(e.currentTarget, 'Copy failed');
+    }
+  });
+  exportViewsBtn?.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    await exportSavedViewsToJson(e.currentTarget);
+  });
+  importViewsBtn?.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    await promptImportViewFile(e.currentTarget);
+  });
   if (els.savedViewsEnabled) {
     els.savedViewsEnabled.checked = savedViewsEnabled();
     els.savedViewsEnabled.addEventListener('change', async () => {
@@ -3858,9 +7778,14 @@
   }
   els.savedViewPurge?.addEventListener('click', async () => {
     if (!window.confirm('Purge all saved view data from this browser?')) return;
-    await clearSavedViews();
-    await renderSavedViewsList();
-    setSavedViewsStatus('Saved view data purged.');
+    try {
+      await clearSavedViews();
+      await renderSavedViewsList();
+      setSavedViewsStatus('Saved view data purged.');
+    } catch (err) {
+      console.warn('Purge saved views failed', err);
+      setSavedViewsStatus(`Purge failed: ${err?.message || err}`);
+    }
   });
   if (els.saveMonumentSelectionEnabled) {
     els.saveMonumentSelectionEnabled.checked = monumentSelectionStorageEnabled();
@@ -3878,8 +7803,7 @@
   document.getElementById('imagery-options')?.addEventListener('change', async (e) => {
     const input = e.target.closest('input[name="imagery-base"]');
     if (!input) return;
-    imageryKey = input.value;
-    await buildTerrain(currentFocus || selectedSite || sites[0]);
+    await applyImageryKey(input.value);
   });
 
   // Mutually exclusive monument marker modes (keep checkboxes; ticking one unticks the others).
@@ -3897,12 +7821,19 @@
       if (mode === 'type') {
         setChecked(els.showAllRelational, false);
         setChecked(els.showAllMonuments, false);
+        setChecked(els.showHorizonRelational, false);
       } else if (mode === 'relational') {
         setChecked(els.showRelatedMonuments, false);
         setChecked(els.showAllMonuments, false);
+        setChecked(els.showHorizonRelational, false);
       } else if (mode === 'all') {
         setChecked(els.showRelatedMonuments, false);
         setChecked(els.showAllRelational, false);
+        setChecked(els.showHorizonRelational, false);
+      } else if (mode === 'horizon') {
+        setChecked(els.showRelatedMonuments, false);
+        setChecked(els.showAllRelational, false);
+        setChecked(els.showAllMonuments, false);
       }
     } finally {
       monumentModeSync = false;
@@ -3910,6 +7841,7 @@
   };
   const normalizeExclusiveMonumentMode = () => {
     if (els.showAllMonuments?.checked) enforceExclusiveMonumentMode('all');
+    else if (els.showHorizonRelational?.checked) enforceExclusiveMonumentMode('horizon');
     else if (els.showAllRelational?.checked) enforceExclusiveMonumentMode('relational');
     else if (els.showRelatedMonuments?.checked) enforceExclusiveMonumentMode('type');
   };
@@ -4003,6 +7935,54 @@
     });
   }
 
+  if (els.showHorizonRelational) {
+    showHorizonRelational = !!els.showHorizonRelational.checked;
+    els.showHorizonRelational.addEventListener('change', async () => {
+      showHorizonRelational = !!els.showHorizonRelational.checked;
+      if (!cameraState.observerMode) {
+        showHorizonRelational = false;
+        els.showHorizonRelational.checked = false;
+        return;
+      }
+      if (showHorizonRelational) enforceExclusiveMonumentMode('horizon');
+      if (!currentPatch) return;
+      if (!showHorizonRelational) {
+        horizonLoadToken++;
+        clearHorizonRelationalMarkers();
+        hideHorizonCalcPanelUnlessViewshed();
+        updateLegendPanel();
+        return;
+      }
+      await loadHorizonRelationalMarkers();
+    });
+  }
+
+  if (els.horizonFloatM) {
+    horizonFloatM = Math.max(0, Number(els.horizonFloatM.value) || 300);
+    els.horizonFloatM.addEventListener('change', async () => {
+      horizonFloatM = Math.max(0, Number(els.horizonFloatM.value) || 300);
+      if (!showHorizonRelational || !currentPatch) return;
+      await loadHorizonRelationalMarkers();
+    });
+  }
+
+  if (els.horizonAzCluster) {
+    horizonAzClusterDeg = Math.max(0.05, Number(els.horizonAzCluster.value) || 0.4);
+    els.horizonAzCluster.addEventListener('change', async () => {
+      horizonAzClusterDeg = Math.max(0.05, Number(els.horizonAzCluster.value) || 0.4);
+      if (!showHorizonRelational || !currentPatch) return;
+      await loadHorizonRelationalMarkers();
+    });
+  }
+
+  if (els.horizonResKey) horizonResKey = normalizeHorizonResKey(els.horizonResKey.value);
+  els.horizonResKey?.addEventListener('change', () => {
+    horizonResKey = normalizeHorizonResKey(els.horizonResKey.value);
+    if (cameraState.observerMode && currentPatch) scheduleViewshedHorizonBackground(horizonResKey, true);
+  });
+  els.fpvHorizonHires?.addEventListener('click', () => runHorizonDrawAtRes('hires'));
+  els.fpvHorizonSuper?.addEventListener('click', () => runHorizonDrawAtRes('super'));
+
   if (els.allRelationalRange) {
     allRelationalRangeM = Number(els.allRelationalRange.value) || 0;
     if (els.allRelationalRangeValue) els.allRelationalRangeValue.textContent = rangeText(allRelationalRangeM);
@@ -4021,46 +8001,56 @@
 
   if (els.showNotes) {
     els.showNotes.addEventListener('change', () => {
+      if (els.showNotes.checked) {
+        datetimePanelOpen = false;
+        updateDatetimePanel();
+      }
       updateNotesPanel();
+      refreshStagePanelToolbar();
     });
   }
   
-  // Display Options toolbar (top-right) mirrors sidebar toggles.
+  // Display Options toolbar (top-right) mirrors sidebar toggles; astronomy toolbar shares data-toggle wiring.
   const displayToolbar = document.getElementById('display-toolbar');
-  if (displayToolbar) {
-    const hintEl = document.getElementById('display-toolbar-hint');
-    const btns = Array.from(displayToolbar.querySelectorAll('button[data-toggle]'));
-    const resetBtn = displayToolbar.querySelector('#reset-view');
+  const toolbarToggleRoots = [displayToolbar, els.astronomyToolbar].filter(Boolean);
+  if (toolbarToggleRoots.length) {
+    const btns = toolbarToggleRoots.flatMap((root) => Array.from(root.querySelectorAll('button[data-toggle]')));
     const refresh = () => {
+      refreshStagePanelToolbar();
+      refreshSurfaceToolbar();
       for (const b of btns) {
         const targetId = b.getAttribute('data-toggle');
+        if (targetId === 'show-notes') continue;
         const input = targetId ? document.getElementById(targetId) : null;
         const on = !!input?.checked;
         b.classList.toggle('active', on);
         b.setAttribute('aria-pressed', on ? 'true' : 'false');
       }
     };
-    const setHint = (s) => {
-      if (!hintEl) return;
-      hintEl.textContent = String(s || '');
-    };
     for (const b of btns) {
       b.addEventListener('click', (e) => {
         e.stopPropagation();
         const targetId = b.getAttribute('data-toggle');
+        if (targetId === 'show-notes') {
+          toggleStagePanel('notes');
+          refresh();
+          return;
+        }
+        if (targetId === 'astro-show-archaeolines' && !cameraState.observerMode) return;
+        if (targetId === 'astro-show-horizon-compass' && !cameraState.observerMode) return;
+        if (targetId === 'show-horizon-relational' && !cameraState.observerMode) return;
         const input = targetId ? document.getElementById(targetId) : null;
         if (!input) return;
         input.checked = !input.checked;
         input.dispatchEvent(new Event('change', { bubbles: true }));
         refresh();
       });
-      b.addEventListener('pointerenter', () => setHint(b.getAttribute('data-tip') || ''));
-      b.addEventListener('pointerleave', () => setHint(''));
     }
-    resetBtn?.addEventListener('pointerenter', () => setHint(resetBtn.getAttribute('data-tip') || ''));
-    resetBtn?.addEventListener('pointerleave', () => setHint(''));
-    displayToolbar.addEventListener('pointerleave', () => setHint(''));
-    // Keep in sync when sidebar checkboxes change.
+    els.toggleSurface?.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      await toggleSurfaceImagery();
+      refresh();
+    });
     for (const b of btns) {
       const targetId = b.getAttribute('data-toggle');
       const input = targetId ? document.getElementById(targetId) : null;
@@ -4080,17 +8070,59 @@
     verticalExaggeration = Number(els.heightSlider.value) || 0;
     if (els.heightValue) els.heightValue.textContent = `${verticalExaggeration.toFixed(1)}x`;
     rebuildTerrainHeights();
-    if (cameraState.observerMode) updateCamera();
+    syncViewshedHorizonVisibility();
   });
+
+  function bindDisplayRange(input, key) {
+    input?.addEventListener('input', () => {
+      displaySettings[key] = Number(input.value);
+      applyDisplaySettings();
+    });
+  }
+
+  function bindTerrainPaintRange(input, key) {
+    input?.addEventListener('input', () => {
+      terrainPaintSettings[key] = Number(input.value);
+      applyDisplaySettings();
+    });
+  }
+
+  bindTerrainPaintRange(els.paintHeightStrength, 'heightStrength');
+  bindTerrainPaintRange(els.paintRelativeHeight, 'relativeHeightStrength');
+  bindTerrainPaintRange(els.paintHeightContrast, 'heightContrast');
+  bindTerrainPaintRange(els.paintHillshade, 'hillshadeStrength');
+  bindTerrainPaintRange(els.paintDistanceStrength, 'distanceStrength');
+  bindTerrainPaintRange(els.paintDistanceDesaturate, 'distanceDesaturate');
+  bindTerrainPaintRange(els.paintDistanceStart, 'distanceStartM');
+  bindTerrainPaintRange(els.paintDistanceEnd, 'distanceEndM');
+  els.paintDistanceBands?.addEventListener('change', () => {
+    terrainPaintSettings.distanceBands = Boolean(els.paintDistanceBands.checked);
+    applyDisplaySettings();
+  });
+
+  astronomyOverlay?.bindControls();
+  syncTerrainViewAstroUi();
+
+  bindDisplayRange(els.displayBrightness, 'brightness');
+  bindDisplayRange(els.displayGamma, 'gamma');
+  bindDisplayRange(els.displayHazeStart, 'hazeStartM');
+  bindDisplayRange(els.displayHazeStrength, 'hazeStrength');
+  bindDisplayRange(els.displayDesaturate, 'desaturateStrength');
+  bindDisplayRange(els.displayFadeDistance, 'fadeDistanceM');
 
   els.observerForm?.addEventListener('submit', async (e) => {
     e.preventDefault();
-    await goToObserverLocation(Number(els.observerLat?.value), Number(els.observerLon?.value));
+    await goToObserverLocation();
   });
 
   document.getElementById('reset-view').addEventListener('click', () => {
     cameraState.pitch = cameraState.observerMode ? 0 : 8;
     cameraState.bearing = 28;
+    if (cameraState.observerMode) {
+      cameraState.fov = OBSERVER_FOV_DEFAULT;
+      updateCamera();
+      return;
+    }
     cameraState.distance = 1850;
     if (selectedSite) {
       currentFocus = { lat: selectedSite.lat, lng: selectedSite.lng };
@@ -4116,12 +8148,14 @@
   }
 
   function panFocusFromScreenDelta(dx, dy) {
+    if (cameraState.observerMode) return;
     if (!currentFocus) return;
     const metersPerPixel = Math.max(0.8, cameraState.distance / 520);
     moveFocus(dy * metersPerPixel, -dx * metersPerPixel);
   }
 
   renderer.domElement.addEventListener('pointerdown', (e) => {
+    if (customLabelPickMode) return;
     e.preventDefault();
     closeLabelPopup();
     stagePointers.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType });
@@ -4155,8 +8189,12 @@
       const scale = nextDistance > 0 && stageGesture.distance > 0 ? stageGesture.distance / nextDistance : 1;
       const dx = nextMidpoint.x - stageGesture.midpoint.x;
       const dy = nextMidpoint.y - stageGesture.midpoint.y;
-      cameraState.distance = Math.max(380, Math.min(6500, cameraState.distance * scale));
-      panFocusFromScreenDelta(dx, dy);
+      if (cameraState.observerMode) {
+        applyObserverFovZoom(scale);
+      } else {
+        cameraState.distance = Math.max(380, Math.min(6500, cameraState.distance * scale));
+        panFocusFromScreenDelta(dx, dy);
+      }
       stageGesture.distance = nextDistance;
       stageGesture.midpoint = nextMidpoint;
       updateCamera();
@@ -4191,9 +8229,10 @@
   renderer.domElement.addEventListener('wheel', (e) => {
     e.preventDefault();
     closeLabelPopup();
-    cameraState.distance = Math.max(380, Math.min(6500, cameraState.distance * (e.deltaY > 0 ? 1.12 : 0.9)));
-    if (e.deltaY < 0 && cameraState.distance < 1100) {
-      moveFocus(Math.max(60, cameraState.distance * 0.05), 0);
+    if (cameraState.observerMode) {
+      applyObserverFovZoom(e.deltaY > 0 ? 1.12 : 0.9);
+    } else {
+      cameraState.distance = Math.max(380, Math.min(6500, cameraState.distance * (e.deltaY > 0 ? 1.12 : 0.9)));
     }
     updateCamera();
   }, { passive: false });
@@ -4231,8 +8270,27 @@
 
   window.addEventListener('resize', resize);
   resize();
+  astronomyOverlay?.syncControls();
+  syncImageryRadioButtons();
+  refreshSurfaceToolbar();
   if (els.heightSlider) verticalExaggeration = Number(els.heightSlider.value) || 0;
   if (els.heightValue) els.heightValue.textContent = `${verticalExaggeration.toFixed(1)}x`;
+  if (els.paintHeightStrength) terrainPaintSettings.heightStrength = Number(els.paintHeightStrength.value);
+  if (els.paintRelativeHeight) terrainPaintSettings.relativeHeightStrength = Number(els.paintRelativeHeight.value);
+  if (els.paintHeightContrast) terrainPaintSettings.heightContrast = Number(els.paintHeightContrast.value) || terrainPaintSettings.heightContrast;
+  if (els.paintHillshade) terrainPaintSettings.hillshadeStrength = Number(els.paintHillshade.value);
+  if (els.paintDistanceStrength) terrainPaintSettings.distanceStrength = Number(els.paintDistanceStrength.value);
+  if (els.paintDistanceDesaturate) terrainPaintSettings.distanceDesaturate = Number(els.paintDistanceDesaturate.value);
+  if (els.paintDistanceStart) terrainPaintSettings.distanceStartM = Number(els.paintDistanceStart.value) || terrainPaintSettings.distanceStartM;
+  if (els.paintDistanceEnd) terrainPaintSettings.distanceEndM = Number(els.paintDistanceEnd.value) || terrainPaintSettings.distanceEndM;
+  terrainPaintSettings.distanceBands = els.paintDistanceBands ? Boolean(els.paintDistanceBands.checked) : false;
+  if (els.displayBrightness) displaySettings.brightness = Number(els.displayBrightness.value) || displaySettings.brightness;
+  if (els.displayGamma) displaySettings.gamma = Number(els.displayGamma.value) || displaySettings.gamma;
+  if (els.displayHazeStart) displaySettings.hazeStartM = Number(els.displayHazeStart.value) || displaySettings.hazeStartM;
+  if (els.displayHazeStrength) displaySettings.hazeStrength = Number(els.displayHazeStrength.value);
+  if (els.displayDesaturate) displaySettings.desaturateStrength = Number(els.displayDesaturate.value);
+  if (els.displayFadeDistance) displaySettings.fadeDistanceM = Number(els.displayFadeDistance.value) || displaySettings.fadeDistanceM;
+  applyDisplaySettings();
   updateCamera();
   animate();
   // Initial state: no site selected; keep stage greyed out with a centered status.
@@ -4247,13 +8305,22 @@
   setPanelOpen('config', false);
   setPanelOpen('presets', false);
   setPanelOpen('about', false);
+  initConfigInnerSections();
   initPresetsUI();
   renderSavedViewsList();
   window.setTimeout(() => {
-    if (window.location.hash) restoreViewFromHash();
+    if (!window.location.hash) return;
+    restoreViewFromHash();
   }, 250);
 
   document.addEventListener('click', (e) => {
+    const configSectionToggle = e.target.closest('.config-section-toggle');
+    if (configSectionToggle) {
+      const section = configSectionToggle.closest('.panel.config-inner');
+      const body = section?.querySelector('.config-section-body');
+      if (body) setConfigSectionOpen(section, body.classList.contains('hidden'));
+      return;
+    }
     const btn = e.target.closest('button[data-panel-action]');
     if (!btn) return;
     const act = btn.getAttribute('data-panel-action');

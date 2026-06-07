@@ -44,17 +44,33 @@
         </div>
         <div class="panel-body hidden" data-panel-body="location">
           <form id="observer-location-form" class="observer-location-form">
-            <p class="hint location-hint"><strong>View Location</strong> for going to a specific lat/lon.</p>
+            <p class="hint location-hint"><strong>View Location</strong> — enter decimal latitude and longitude (see Help for supported formats). Loads a new standard orbit view at any time, including from FP view.</p>
             <label for="observer-lat">Latitude</label>
-            <input id="observer-lat" class="coord-input" type="number" step="0.000001" value="53.490266">
+            <input id="observer-lat" class="coord-input" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" value="53.490266">
             <label for="observer-lon">Longitude</label>
-            <input id="observer-lon" class="coord-input" type="number" step="0.000001" value="-7.5625666">
+            <input id="observer-lon" class="coord-input" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" value="-7.5625666">
             <button id="observer-go" class="monument-selection-reset" type="submit">
               <i class="ph-bold ph-map-pin"></i>
               <span>View Location</span>
             </button>
             <div id="observer-status" class="status observer-status">Default location: 53.490266, -7.5625666.</div>
           </form>
+      </div>
+        </section>
+
+        <!-- Saved Views -->
+        <section class="panel panel-collapsible panel-saved-views" data-panel="saved-views">
+        <div class="panel-head">
+          <div class="panel-title" style="margin:0; display:flex; align-items:center; gap:8px;">
+            <i class="ph-bold ph-bookmark-simple"></i>
+            <span>Saved Views</span>
+          </div>
+          <button type="button" class="panel-toggle" data-panel-action="saved-views-toggle" aria-label="Toggle saved views panel" title="Minimise/Maximise">
+            <i class="ph-bold ph-caret-down"></i>
+          </button>
+        </div>
+        <div class="panel-body hidden" data-panel-body="saved-views">
+          <div id="saved-views-list" class="saved-views-list"></div>
         </div>
         </section>
 
@@ -88,22 +104,6 @@
         </div>
         <div class="panel-body hidden" data-panel-body="sites">
           <div id="site-list" class="site-list"></div>
-        </div>
-        </section>
-
-        <!-- Saved Views -->
-        <section class="panel panel-collapsible panel-saved-views" data-panel="saved-views">
-        <div class="panel-head">
-          <div class="panel-title" style="margin:0; display:flex; align-items:center; gap:8px;">
-            <i class="ph-bold ph-bookmark-simple"></i>
-            <span>Saved Views</span>
-          </div>
-          <button type="button" class="panel-toggle" data-panel-action="saved-views-toggle" aria-label="Toggle saved views panel" title="Minimise/Maximise">
-            <i class="ph-bold ph-caret-down"></i>
-          </button>
-        </div>
-        <div class="panel-body hidden" data-panel-body="saved-views">
-          <div id="saved-views-list" class="saved-views-list"></div>
         </div>
         </section>
 
@@ -143,13 +143,14 @@
               <input id="saved-views-enabled" type="checkbox" checked />
               <span>
                 <strong>Enable Stored Views</strong>
-                <small>Store named view snapshots in this browser using IndexedDB.</small>
+                <small>Store named orbit and FP views in this browser using IndexedDB.</small>
               </span>
             </label>
             <button id="saved-view-purge" class="saved-action-btn danger" type="button">
               <i class="ph-bold ph-trash"></i>
               <span>Purge Saved View Data</span>
             </button>
+            <div id="saved-views-status" class="status" aria-live="polite"></div>
           </div>
 
           <div class="panel config-inner monument-selection-config">
@@ -264,6 +265,36 @@
           </div>
 
           <div class="panel config-inner">
+            <div class="panel-title"><i class="ph-bold ph-sun-horizon"></i> Horizon Draw</div>
+            <p class="hint small">Viewshed horizon from the panorama observer. All resolutions scan to 120 km; Quick (360 bearings) runs when entering Panorama. Use Hi Res or Super Res on the Astronomy toolbar to redraw with more bearings and finer DEM sampling.</p>
+            <label class="coord-row" for="horizon-res-key">
+              <span>Horizon resolution</span>
+              <select id="horizon-res-key" class="coord-input">
+                <option value="quick" selected>Quick (360 steps, 120 km)</option>
+                <option value="hires">Hi-Res (3600 steps, 120 km)</option>
+                <option value="super">Super (Z12, 3600 steps, 120 km)</option>
+              </select>
+            </label>
+            <div class="layer-options compact">
+              <label class="layer-option" style="display:flex; align-items:flex-start; gap:10px; margin-top: 10px;">
+                <input id="show-horizon-relational" type="checkbox" />
+                <span>
+                  <strong>Show Horizon Relational Monuments</strong>
+                  <small>Panorama only — same toggle on the Astronomy toolbar. Relational classes within float (m) of the viewshed horizon line; markers at each site’s alt/az.</small>
+                </span>
+              </label>
+              <label class="coord-row" for="horizon-float-m">
+                <span>Horizon float (m)</span>
+                <input id="horizon-float-m" class="coord-input" type="number" min="0" max="2000" step="25" value="500">
+              </label>
+              <label class="coord-row" for="horizon-az-cluster">
+                <span>Azimuth cluster (°)</span>
+                <input id="horizon-az-cluster" class="coord-input" type="number" min="0.05" max="5" step="0.05" value="0.4">
+              </label>
+            </div>
+          </div>
+
+          <div class="panel config-inner">
             <div class="panel-title"><i class="ph-bold ph-mountains"></i> Terrain Controls</div>
             <label class="range-row" for="height-exaggeration">
               <span>Vertical exaggeration</span>
@@ -288,6 +319,241 @@
               </label>
             </div>
           </div>
+          <div class="panel config-inner">
+            <div class="panel-title"><i class="ph-bold ph-planet"></i> Astronomy</div>
+            <p class="hint small">Sun and Moon overlay for panorama/first-person view. Uses astronomical year numbering: year 0 = 1 BCE, year -1 = 2 BCE. Dates before 15 Oct 1582 use the Julian calendar; later dates use Gregorian.</p>
+            <label class="coord-row" for="astro-engine">
+              <span>Calculation engine</span>
+              <select id="astro-engine" class="coord-input">
+                <option value="astronomy">Astronomy Engine</option>
+                <option value="swiss" selected>Swiss Ephemeris</option>
+              </select>
+            </label>
+            <div class="layer-options compact">
+              <label class="layer-option">
+                <input id="astro-swiss-atmosphere" type="checkbox" checked>
+                <span>
+                  <strong>Swiss Ephemeris atmosphere</strong>
+                  <small>Refraction for Sun, Moon, paths, and archaeolines (Swiss Ephemeris only). Uses pressure, temperature, and observer eye height below.</small>
+                </span>
+              </label>
+            </div>
+            <div class="layer-options compact">
+              <label class="layer-option">
+                <input id="astro-atmosphere-auto" type="checkbox" checked>
+                <span>
+                  <strong>Auto pressure from altitude (Stellarium)</strong>
+                  <small>1013.25 mbar at sea-level height; barometric reduction to eye height. Off = fixed pressure value.</small>
+                </span>
+              </label>
+            </div>
+            <div class="astro-date-grid astro-atmosphere-grid">
+              <label for="astro-sea-level-pressure">
+                <span>Sea-level pressure (mbar)</span>
+                <input id="astro-sea-level-pressure" class="coord-input" type="number" min="400" max="1100" step="0.01" value="1013.25">
+              </label>
+              <label for="astro-sea-level-height">
+                <span>Sea-level height (m)</span>
+                <input id="astro-sea-level-height" class="coord-input" type="number" step="0.1" value="0">
+              </label>
+              <label for="astro-temperature">
+                <span>Temperature (°C)</span>
+                <input id="astro-temperature" class="coord-input" type="number" step="0.1" value="15">
+              </label>
+            </div>
+            <p class="hint small">Stellarium defaults: 1013.25 mbar at sea level, 15 °C, pressure reduced by standard atmosphere to observer eye height (terrain + offset).</p>
+            <p class="hint small">
+              <label class="simple-check" for="astro-use-summertime">
+                <input id="astro-use-summertime" type="checkbox">
+                Use Summertime
+              </label>
+            </p>
+            <div class="astro-date-grid">
+              <label for="astro-year">
+                <span>Year</span>
+                <input id="astro-year" class="coord-input" type="number" min="-9999" max="9999" step="1" autocomplete="off" spellcheck="false" placeholder="-3000">
+              </label>
+              <label for="astro-month">
+                <span>Month</span>
+                <input id="astro-month" class="coord-input" type="number" min="1" max="12" step="1">
+              </label>
+              <label for="astro-day">
+                <span>Day</span>
+                <input id="astro-day" class="coord-input" type="number" min="1" max="31" step="1">
+              </label>
+              <label for="astro-time">
+                <span id="astro-time-label">UTC Time (HH:MM:SS)</span>
+                <input id="astro-time" class="coord-input" type="text" inputmode="numeric" autocomplete="off" placeholder="HH:MM:SS" spellcheck="false">
+              </label>
+            </div>
+            <label class="range-row" for="astro-body-scale">
+              <span>Sun/Moon display scale</span>
+              <strong id="astro-body-scale-value">1.0x</strong>
+            </label>
+            <input id="astro-body-scale" class="range-input" type="range" min="0.5" max="5.0" step="0.1" value="1.0">
+            <small>1.0× = true apparent solar/lunar diameter on the 360° horizon.</small>
+            <div class="layer-options compact">
+              <label class="layer-option">
+                <input id="astro-show-sun" type="checkbox" checked>
+                <span>
+                  <strong>Show Sun</strong>
+                  <small>Draw the Sun at true azimuth/altitude with angular size.</small>
+                </span>
+              </label>
+              <label class="layer-option">
+                <input id="astro-show-moon" type="checkbox" checked>
+                <span>
+                  <strong>Show Moon</strong>
+                  <small>Draw the Moon with phase and angular size.</small>
+                </span>
+              </label>
+              <label class="layer-option">
+                <input id="astro-show-paths" type="checkbox" checked>
+                <span>
+                  <strong>Show current daily paths</strong>
+                  <small>Draw sampled Sun and Moon paths for the selected date.</small>
+                </span>
+              </label>
+            </div>
+            <div class="panel-title" style="margin-top: 10px;"><i class="ph-bold ph-rainbow"></i> Archaeolines</div>
+            <p class="hint small">Declination arcs for the selected era (obliquity at the chosen date). Lunar lines include horizon parallax.</p>
+            <div class="layer-options compact">
+              <label class="layer-option">
+                <input id="astro-show-archaeolines" type="checkbox">
+                <span>
+                  <strong>Show archaeolines</strong>
+                  <small>Show or hide all selected archaeolines in the view. Same toggle on the Astronomy toolbar (rainbow icon).</small>
+                </span>
+              </label>
+              <label class="layer-option">
+                <input id="astro-show-horizon-compass" type="checkbox">
+                <span>
+                  <strong>Horizon compass</strong>
+                  <small>0° azimuth ring with degree ticks and N/NE/E… labels (light gray). Toggle on the Astronomy toolbar (compass icon).</small>
+                </span>
+              </label>
+              <label class="layer-option">
+                <input id="astro-arch-equinox" type="checkbox" checked>
+                <span>
+                  <strong>Equinoxes</strong>
+                  <small>Celestial equator, 0° declination. Yellow.</small>
+                </span>
+              </label>
+              <label class="layer-option">
+                <input id="astro-arch-solstice" type="checkbox" checked>
+                <span>
+                  <strong>Solstices</strong>
+                  <small>Solar limits at ± obliquity for the selected date. Orange.</small>
+                </span>
+              </label>
+              <label class="layer-option">
+                <input id="astro-arch-crossquarter" type="checkbox" checked>
+                <span>
+                  <strong>Cross-quarters</strong>
+                  <small>Solar paths midway between equinox and solstice. Green.</small>
+                </span>
+              </label>
+              <label class="layer-option">
+                <input id="astro-arch-major-lunar" type="checkbox" checked>
+                <span>
+                  <strong>Major lunar standstill</strong>
+                  <small>Maximum lunar declination limits. Blue.</small>
+                </span>
+              </label>
+              <label class="layer-option">
+                <input id="astro-arch-minor-lunar" type="checkbox" checked>
+                <span>
+                  <strong>Minor lunar standstill</strong>
+                  <small>Minimum lunar declination limits. Red.</small>
+                </span>
+              </label>
+            </div>
+            <div id="astro-status" class="status observer-status">Load a view to place the Sun and Moon in the landscape.</div>
+          </div>
+          <div class="panel config-inner">
+            <div class="panel-title"><i class="ph-bold ph-paint-brush"></i> Terrain Painting</div>
+            <label class="range-row" for="paint-height-strength">
+              <span>Height tint strength</span>
+              <strong id="paint-height-strength-value">0.08</strong>
+            </label>
+            <input id="paint-height-strength" class="range-input" type="range" min="0" max="0.80" step="0.01" value="0.08">
+            <label class="range-row" for="paint-relative-height">
+              <span>Relative height strength</span>
+              <strong id="paint-relative-height-value">0.49</strong>
+            </label>
+            <input id="paint-relative-height" class="range-input" type="range" min="0" max="0.80" step="0.01" value="0.49">
+            <label class="range-row" for="paint-height-contrast">
+              <span>Height contrast</span>
+              <strong id="paint-height-contrast-value">2.15</strong>
+            </label>
+            <input id="paint-height-contrast" class="range-input" type="range" min="0.50" max="2.50" step="0.05" value="2.15">
+            <label class="range-row" for="paint-hillshade">
+              <span>Hillshade strength</span>
+              <strong id="paint-hillshade-value">0.47</strong>
+            </label>
+            <input id="paint-hillshade" class="range-input" type="range" min="0" max="0.70" step="0.01" value="0.47">
+            <label class="range-row" for="paint-distance-strength">
+              <span>Distance grade strength</span>
+              <strong id="paint-distance-strength-value">0.65</strong>
+            </label>
+            <input id="paint-distance-strength" class="range-input" type="range" min="0" max="1.00" step="0.01" value="0.65">
+            <label class="range-row" for="paint-distance-desaturate">
+              <span>Distance desaturation</span>
+              <strong id="paint-distance-desaturate-value">0.90</strong>
+            </label>
+            <input id="paint-distance-desaturate" class="range-input" type="range" min="0" max="0.90" step="0.01" value="0.90">
+            <label class="range-row" for="paint-distance-start">
+              <span>Distance grade starts</span>
+              <strong id="paint-distance-start-value">5500m</strong>
+            </label>
+            <input id="paint-distance-start" class="range-input" type="range" min="500" max="15000" step="250" value="5500">
+            <label class="range-row" for="paint-distance-end">
+              <span>Distance grade full</span>
+              <strong id="paint-distance-end-value">9000m</strong>
+            </label>
+            <input id="paint-distance-end" class="range-input" type="range" min="5000" max="70000" step="1000" value="9000">
+            <label class="layer-option" style="display:flex; align-items:flex-start; gap:10px; margin-top: 10px;">
+              <input id="paint-distance-bands" type="checkbox" />
+              <span>
+                <strong>Subtle distance bands</strong>
+                <small>Add faint range bands to separate foreground, middle distance, and far horizon.</small>
+              </span>
+            </label>
+          </div>
+          <div class="panel config-inner">
+            <div class="panel-title"><i class="ph-bold ph-cloud-sun"></i> Atmosphere & Display</div>
+            <label class="range-row" for="display-brightness">
+              <span>Brightness lift</span>
+              <strong id="display-brightness-value">1.19</strong>
+            </label>
+            <input id="display-brightness" class="range-input" type="range" min="0.70" max="1.60" step="0.01" value="1.19">
+            <label class="range-row" for="display-gamma">
+              <span>Gamma correction</span>
+              <strong id="display-gamma-value">0.84</strong>
+            </label>
+            <input id="display-gamma" class="range-input" type="range" min="0.60" max="1.40" step="0.01" value="0.84">
+            <label class="range-row" for="display-haze-start">
+              <span>Haze starts beyond camera</span>
+              <strong id="display-haze-start-value">12500m</strong>
+            </label>
+            <input id="display-haze-start" class="range-input" type="range" min="500" max="25000" step="500" value="12500">
+            <label class="range-row" for="display-haze-strength">
+              <span>Haze strength</span>
+              <strong id="display-haze-strength-value">0.19</strong>
+            </label>
+            <input id="display-haze-strength" class="range-input" type="range" min="0" max="0.60" step="0.01" value="0.19">
+            <label class="range-row" for="display-desaturate">
+              <span>Distance desaturation</span>
+              <strong id="display-desaturate-value">0.19</strong>
+            </label>
+            <input id="display-desaturate" class="range-input" type="range" min="0" max="0.60" step="0.01" value="0.19">
+            <label class="range-row" for="display-fade-distance">
+              <span>Fade distance</span>
+              <strong id="display-fade-distance-value">46000m</strong>
+            </label>
+            <input id="display-fade-distance" class="range-input" type="range" min="5000" max="90000" step="1000" value="46000">
+            <p class="hint small">Stellarium export always renders with transparent sky; no horizon.txt is generated.</p>
+          </div>
         </div>
         </section>
 
@@ -305,7 +571,7 @@
         <div class="panel-body hidden" data-panel-body="about">
           <div class="about-inner">
             <div class="brand-logo about-archaeoscapes" aria-label="Archaeoscapes">
-              <i class="fa-solid fa-landmark"></i>
+              <img class="logo-icon" src="./sun.svg?v=20260531" alt="" aria-hidden="true">
               <span>Archaeoscapes</span>
             </div>
             <div class="about-developed">developed by</div>
@@ -313,16 +579,20 @@
             <div class="about-year">2026</div>
 
             <div class="about-copy">
-              <p><strong>Licence.</strong> The code is issued using Creative Commons — Attribution 4.0 International — CC BY 4.0.</p>
+              <p><strong>Privacy.</strong> No cookies are used. The only data stored on your device relates to saved views you choose to create; you control this entirely (save, export, import, disable, or purge from Configuration).</p>
+              <p><strong>Licence.</strong> Application code: Creative Commons Attribution 4.0 International (CC BY 4.0).</p>
               <p><strong>Disclaimer.</strong> This application and its outputs are provided for research, educational, and exploratory use only. Data, terrain, imagery, derived views, positional information, classifications, and interpretive material may contain errors or omissions and should not be treated as legal, planning, conservation, excavation, navigation, or safety advice. Users should verify all information against the relevant official sources before relying on it.</p>
               <p><strong>Attributions.</strong></p>
               <ul>
-                <li>Elevation data: Terrarium-format public elevation tiles from AWS Open Data / Mapzen-derived terrain tiles.</li>
-                <li>Imagery: Esri World Imagery / Esri World Imagery Clarity.</li>
-                <li>Imagery: Google satellite tile service where selected by the user.</li>
-                <li>Monument data, Ireland: National Monuments Service Sites and Monuments Record Open Data.</li>
-                <li>Monument data, Northern Ireland: Historic Environment Division / Department for Communities HED and NISMR public datasets.</li>
+                <li><strong>Elevation:</strong> Terrarium-format tiles via AWS Open Data (Mapzen-derived terrain).</li>
+                <li><strong>Imagery:</strong> Esri World Imagery / Esri World Imagery Clarity; Google satellite tiles where selected.</li>
+                <li><strong>Monuments, Ireland:</strong> National Monuments Service Sites and Monuments Record Open Data (ArcGIS Feature Service).</li>
+                <li><strong>Monuments, Northern Ireland:</strong> Historic Environment Division GIS / NISMR public datasets (ArcGIS Feature Service).</li>
+                <li><strong>Astronomy:</strong> Swiss Ephemeris (Astrodienst; GPL-3.0-or-later, vendored WASM build with ephemeris files); Astronomy Engine (cosinekitty/astronomy, MIT).</li>
+                <li><strong>Rendering &amp; UI:</strong> Three.js; Phosphor Icons; Leaflet and Esri Leaflet; html2canvas; JSZip (Stellarium export).</li>
+                <li><strong>Typography:</strong> Inter, JetBrains Mono, and Montserrat via Google Fonts.</li>
               </ul>
+              <p class="hint small">Swiss Ephemeris is subject to Astrodienst licensing terms. Commercial use of Swiss Ephemeris may require a separate licence from Astrodienst AG.</p>
             </div>
           </div>
         </div>
@@ -343,11 +613,14 @@
 
     <main class="tour-stage">
       <div id="stage-loading" class="stage-loading" aria-live="polite" aria-busy="true">
-        <button id="loading-help-view" class="loading-help-btn" type="button" aria-label="Help" title="Help">
+        <button id="loading-help-view" class="loading-screen-btn loading-screen-btn--help" type="button" aria-label="Help" title="Help">
           <i class="ph-bold ph-question"></i>
         </button>
+        <button id="loading-import-view" class="loading-screen-btn loading-screen-btn--import" type="button" aria-label="Import View" title="Import View">
+          <i class="ph-bold ph-download-simple"></i>
+        </button>
         <div class="stage-loading-logo" aria-hidden="true">
-          <i class="fa-solid fa-landmark"></i>
+          <img class="logo-icon" src="./sun.svg?v=20260531" alt="">
           <span>Archaeoscapes</span>
         </div>
         <div class="stage-loading-card">
@@ -360,43 +633,85 @@
 
       <div class="topbar">
         <div id="hud-left" class="hud-left" aria-hidden="true"></div>
-        <div id="stage-toolbar-left" class="display-toolbar stage-toolbar-left" aria-label="Stage toolbar">
-          <button id="toggle-sidebar" class="display-btn" type="button" data-tip="Show/Hide sidebar" aria-label="Show/Hide sidebar" aria-pressed="true">
-            <i class="ph-bold ph-sidebar-simple"></i>
-          </button>
-          <button id="hide-controls" class="display-btn" type="button" data-tip="Hide Controls" aria-label="Hide Controls" aria-pressed="false">
-            <i class="ph-bold ph-square"></i>
-          </button>
-          <button id="fullscreen-view" class="display-btn" type="button" data-tip="Fullscreen" aria-label="Fullscreen" aria-pressed="false">
-            <i class="ph-bold ph-arrows-out"></i>
-          </button>
-          <button id="panorama-view" class="display-btn" type="button" data-tip="Panorama first-person view" aria-label="Panorama first-person view" aria-pressed="false">
-            <i class="ph-bold ph-panorama"></i>
-          </button>
-          <button id="save-view" class="display-btn" type="button" data-tip="Save View" aria-label="Save View">
-            <i class="ph-bold ph-floppy-disk"></i>
-          </button>
-          <button id="copy-view" class="display-btn" type="button" data-tip="Copy View URL" aria-label="Copy View URL">
-            <i class="ph-bold ph-link-simple"></i>
-          </button>
-          <button id="capture-view" class="display-btn" type="button" data-tip="Capture Image" aria-label="Capture Image">
-            <i class="ph-bold ph-camera"></i>
-          </button>
-          <button id="help-view" class="display-btn" type="button" data-tip="Help" aria-label="Help">
-            <i class="ph-bold ph-question"></i>
-          </button>
-          <button id="orbit-site" class="display-btn" type="button" data-tip="Orbit selected site" aria-label="Orbit selected site">
-            <i class="ph-bold ph-arrow-clockwise"></i>
-          </button>
+        <div id="stage-toolbar-left-stack" class="stage-toolbar-left-stack">
+          <div id="stage-toolbar-left" class="display-toolbar stage-toolbar-left" aria-label="Stage toolbar">
+            <button id="toggle-sidebar" class="display-btn" type="button" data-tip="Show/Hide sidebar" aria-label="Show/Hide sidebar" aria-pressed="true">
+              <i class="ph-bold ph-sidebar-simple"></i>
+            </button>
+            <button id="hide-controls" class="display-btn" type="button" data-tip="Hide Controls" aria-label="Hide Controls" aria-pressed="false">
+              <i class="ph-bold ph-square"></i>
+            </button>
+            <button id="toggle-info" class="display-btn" type="button" data-tip="Site information" aria-label="Site information" aria-pressed="false">
+              <i class="ph-bold ph-info"></i>
+            </button>
+            <button id="fullscreen-view" class="display-btn" type="button" data-tip="Fullscreen" aria-label="Fullscreen" aria-pressed="false">
+              <i class="ph-bold ph-arrows-out"></i>
+            </button>
+            <button id="toggle-fpv" class="display-btn" type="button" data-tip="Show FP View" aria-label="Show FP View" aria-pressed="false">
+              <i class="ph-bold ph-eye"></i>
+            </button>
+            <button id="toggle-astronomy" class="display-btn" type="button" data-tip="Show Astronomy Tools" aria-label="Show Astronomy Tools" aria-pressed="false">
+              <i class="ph-bold ph-sun-horizon"></i>
+            </button>
+            <button id="save-view" class="display-btn" type="button" data-tip="Save View" aria-label="Save View">
+              <i class="ph-bold ph-floppy-disk"></i>
+            </button>
+            <button id="copy-view" class="display-btn" type="button" data-tip="Copy View URL" aria-label="Copy View URL">
+              <i class="ph-bold ph-link-simple"></i>
+            </button>
+            <button id="export-views" class="display-btn" type="button" data-tip="Export View (JSON)" aria-label="Export View (JSON)">
+              <i class="ph-bold ph-upload-simple"></i>
+            </button>
+            <button id="import-views" class="display-btn" type="button" data-tip="Import View (JSON)" aria-label="Import View (JSON)">
+              <i class="ph-bold ph-download-simple"></i>
+            </button>
+            <button id="capture-view" class="display-btn" type="button" data-tip="Capture Image" aria-label="Capture Image">
+              <i class="ph-bold ph-camera"></i>
+            </button>
+            <button id="help-view" class="display-btn" type="button" data-tip="Help" aria-label="Help">
+              <i class="ph-bold ph-question"></i>
+            </button>
+          </div>
+          <div id="astronomy-toolbar" class="display-toolbar stage-toolbar-astronomy hidden" aria-label="Astronomy toolbar" aria-hidden="true">
+            <button id="toggle-datetime-panel" class="display-btn" type="button" data-tip="Date and Time" aria-label="Date and Time" aria-pressed="false">
+              <i class="ph-bold ph-calendar-blank"></i>
+            </button>
+            <button class="display-btn" type="button" data-toggle="astro-show-archaeolines" data-tip="Archaeolines" aria-label="Archaeolines" aria-pressed="false">
+              <i class="ph-bold ph-rainbow"></i>
+            </button>
+            <button class="display-btn" type="button" data-toggle="astro-show-horizon-compass" data-tip="Horizon compass (0°)" aria-label="Horizon compass" aria-pressed="false">
+              <i class="ph-bold ph-compass"></i>
+            </button>
+            <button class="display-btn" type="button" data-toggle="show-horizon-relational" data-tip="Show Horizon Relational Monuments" aria-label="Show Horizon Relational Monuments" aria-pressed="false">
+              <i class="ph-bold ph-mountains"></i>
+            </button>
+            <button id="fpv-horizon-hires" class="display-btn" type="button" data-tip="Hi Res - horizon" aria-label="Hi Res - horizon">
+              <i class="ph-bold ph-cell-signal-medium"></i>
+            </button>
+            <button id="fpv-horizon-super" class="display-btn" type="button" data-tip="Super Res - horizon" aria-label="Super Res - horizon">
+              <i class="ph-bold ph-cell-signal-high"></i>
+            </button>
+            <button id="export-stellarium" class="display-btn" type="button" data-tip="Export Stellarium landscape" aria-label="Export Stellarium landscape">
+              <i class="ph-bold ph-sparkle"></i>
+            </button>
+            <button id="toggle-custom-label" class="display-btn" type="button" data-tip="Custom Label" aria-label="Custom Label" aria-pressed="false">
+              <i class="ph-bold ph-crosshair"></i>
+            </button>
+          </div>
         </div>
         <div class="topbar-right">
-          <div id="display-toolbar-hint" class="display-toolbar-hint" aria-live="polite"></div>
-          <div id="display-toolbar" class="display-toolbar" aria-label="Display options toolbar">
+          <div id="display-toolbar" class="display-toolbar display-toolbar-top-right" aria-label="Display options toolbar">
             <button id="reset-view" class="display-btn" type="button" data-tip="Reset view" aria-label="Reset view">
               <i class="ph-bold ph-arrow-counter-clockwise"></i>
             </button>
+            <button id="orbit-site" class="display-btn" type="button" data-tip="Orbit selected site" aria-label="Orbit selected site">
+              <i class="ph-bold ph-arrow-clockwise"></i>
+            </button>
             <button class="display-btn" type="button" data-toggle="show-notes" data-tip="Show Notes" aria-label="Show Notes" aria-pressed="false">
               <i class="ph-bold ph-note"></i>
+            </button>
+            <button id="toggle-surface" class="display-btn" type="button" data-tip="Surface: Esri Aerial Clarity" aria-label="Surface" aria-pressed="false">
+              <i class="ph-bold ph-stack"></i>
             </button>
             <button class="display-btn" type="button" data-toggle="show-legend" data-tip="Show Legend" aria-label="Show Legend" aria-pressed="false">
               <i class="ph-bold ph-list-bullets"></i>
@@ -417,9 +732,11 @@
         </div>
       </div>
 
+      <div id="stage-view-caption" class="stage-view-caption hidden" aria-live="polite"></div>
+
       <section id="help-overlay" class="help-overlay hidden" aria-label="Archaeoscapes help" aria-hidden="true">
         <div class="help-watermark" aria-hidden="true">
-          <i class="fa-solid fa-landmark"></i>
+          <img class="logo-icon" src="./sun.svg?v=20260531" alt="">
           <span>Archaeoscapes</span>
         </div>
         <button id="help-close" class="help-close" type="button" aria-label="Close Help">
@@ -430,86 +747,161 @@
           <article class="help-card">
             <header class="help-hero">
               <div class="brand-logo help-logo" aria-label="Archaeoscapes">
-                <i class="fa-solid fa-landmark"></i>
+                <img class="logo-icon" src="./sun.svg?v=20260531" alt="" aria-hidden="true">
                 <span>Archaeoscapes</span>
               </div>
               <h1>Application Help</h1>
               <p>Archaeoscapes is a landscape viewer for exploring monuments in the physical terrain in which they sit throughout the island of Ireland.</p>
-              <p>The application is intended to help show selected and relational monument groups in context: for example by monument class, era, likely purpose, spatial association, or other categorised relationships.</p>
+              <p>It supports monument selection, relational context, terrain and imagery comparison, saved views, panorama observation, viewshed horizons, astronomy overlays (Sun, Moon, paths, archaeolines, horizon compass), and horizon-line analysis for research and education.</p>
             </header>
 
             <section class="help-section">
               <h2>Top-Left View Controls</h2>
-              <p>These controls manage the screen layout, saved views, help, panorama mode, and the selected-site orbit. They sit on the view itself so they remain available while working in the landscape.</p>
+              <p>These controls manage layout, capture, and saved views. They remain on the view while you work in the landscape. In Hide Controls mode, only Hide Controls and Capture Image stay visible on the toolbar.</p>
               <div class="help-control-grid">
-                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-sidebar-simple"></i></span><strong>Show/Hide sidebar</strong><span>Expands or collapses the sidebar to give more room to the landscape. After loading a view, the sidebar collapses to a slim left-edge control; hover, touch, or focus that control to reopen it.</span></div>
-                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-square"></i></span><strong>Hide Controls</strong><span>Reduces the interface for clean screen captures.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-sidebar-simple"></i></span><strong>Show/Hide sidebar</strong><span>Expands or collapses the sidebar. After loading a view the sidebar auto-collapses to a slim left-edge control; hover, touch, or focus that control to reopen it.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-square"></i></span><strong>Hide Controls</strong><span>Reduces on-screen controls for clean captures. Toggle again to restore the full interface.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-info"></i></span><strong>Site information</strong><span>Shows or hides the top-centre caption (townland, monument type, SMR, county, coordinates, or Current Location).</span></div>
                 <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-arrows-out"></i></span><strong>Fullscreen</strong><span>Requests browser fullscreen where supported, useful on phones where the address bar consumes view height.</span></div>
-                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-panorama"></i></span><strong>Panorama</strong><span>Switches the loaded view to first-person mode at the current site or lat/lon, with the camera placed at terrain height plus 2 metres and pitch set close to level.</span></div>
-                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-floppy-disk"></i></span><strong>Save View</strong><span>Stores the current view, selected site, visible markers, labels, ranges, and UI state.</span></div>
-                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-link-simple"></i></span><strong>Copy View URL</strong><span>Copies a shareable link for the current view state.</span></div>
-                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-question"></i></span><strong>Help</strong><span>Opens this help page over the view area.</span></div>
-                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-arrow-clockwise"></i></span><strong>Orbit selected site</strong><span>Runs one smooth 360 degree orbit around the selected site. In Panorama mode it spins the first-person camera through 360 degrees from the fixed observer position.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-eye"></i></span><strong>Show FP View</strong><span>Enters first-person panorama (FP) view without opening astronomy overlays. Click again to return to standard orbit view.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-sun-horizon"></i></span><strong>Show Astronomy Tools</strong><span>Available in FP view only. Opens or closes the Astronomy toolbar: date and time, archaeolines, horizon compass, horizon relational monuments, horizon resolution redraw, and Stellarium export.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-floppy-disk"></i></span><strong>Save View</strong><span>Names and stores the current orbit or FP view in this browser (IndexedDB): site, camera, markers, labels, ranges, and UI visibility. FP views also store date/time, archaeolines, and horizon relational settings. Confirms with <strong>View Saved</strong>.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-link-simple"></i></span><strong>Copy View URL</strong><span>Copies a shareable link for the current view state and confirms with <strong>Copied !</strong></span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-upload-simple"></i></span><strong>Export View (JSON)</strong><span>Downloads all saved views from this browser as a JSON file.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-download-simple"></i></span><strong>Import View (JSON)</strong><span>Imports saved views from a JSON file and optionally opens the first imported view. Also on the loading screen (bottom-right) before a site is selected.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-camera"></i></span><strong>Capture Image</strong><span>Downloads a PNG of the current view and confirms with <strong>Captured !</strong></span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-question"></i></span><strong>Help</strong><span>Opens this help page over the view area. Also on the loading screen (top-right).</span></div>
+              </div>
+            </section>
+
+            <section class="help-section">
+              <h2>Astronomy Toolbar</h2>
+              <p>Opens from <strong>Show Astronomy Tools</strong> while in FP view. Astronomy controls are not available in standard orbit view.</p>
+              <div class="help-control-grid">
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-calendar-blank"></i></span><strong>Date and Time</strong><span>Opens the on-view date/time panel for UTC year (including BCE minus years), month, day, hour, minute, and second, plus time transport controls. Sun and Moon update immediately when any date or time field changes. Closes Notes when opened.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-rainbow"></i></span><strong>Archaeolines</strong><span>Master on/off for declination arcs in the view. Individual line types are configured in Configuration → Astronomy and stay synced with this toggle.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-compass"></i></span><strong>Horizon compass</strong><span>Draws a 360° compass ring at the horizon with degree ticks and N / NE / E / SE / S / SW / W / NW labels. Scrolls as you rotate bearing in panorama.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-mountains"></i></span><strong>Show Horizon Relational Monuments</strong><span>Finds relational monument classes (from your Configuration selection) within the configured float distance of the viewshed horizon line (120 km scan), clusters them by azimuth, and shows one marker per cluster. While loading, the horizon progress bar above the bottom readout shows fetch and match status (same bar as viewshed). Click a cluster marker for its label; use the expand icon (<strong>Expand All</strong> tooltip) to reveal every site in that cluster. Mutually exclusive with other monument marker modes. Tune float (m) and azimuth cluster (°) under Configuration → Horizon Draw.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-cell-signal-medium"></i></span><strong>Hi Res - horizon</strong><span>Redraws the viewshed horizon at higher resolution (3600 steps, 120 km scan). Panorama mode only.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-cell-signal-high"></i></span><strong>Super Res - horizon</strong><span>Redraws the viewshed horizon at super resolution (Z12 DEM, 3600 steps, 120 km scan). Panorama mode only.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-sparkle"></i></span><strong>Export Stellarium</strong><span>Exports the current landscape as a transparent-sky Stellarium package (panorama image and landscape.ini). No horizon.txt raycast file is generated.</span></div>
+              </div>
+            </section>
+
+            <section class="help-section">
+              <h2>Horizon Line (Panorama)</h2>
+              <p>In Panorama (first-person) view, Archaeoscapes computes a viewshed horizon from the observer position and draws it on the view. The line supports astronomy overlays and terrain clipping to the visible sky.</p>
+              <div class="help-guide-list">
+                <div class="help-guide-item">
+                  <span class="help-sidebar-icon"><i class="ph-bold ph-sun-horizon"></i></span>
+                  <div>
+                    <h3>120 km scan</h3>
+                    <p>Quick, Hi-Res, and Super all scan out to <strong>120 km</strong>. They differ in bearing count and DEM zoom: Quick (360 steps, Z11), Hi-Res (3600 steps, Z11), Super (3600 steps, Z12). Use Super for narrow distant peaks.</p>
+                  </div>
+                </div>
+                <div class="help-guide-item">
+                  <span class="help-sidebar-icon"><i class="ph-bold ph-clock"></i></span>
+                  <div>
+                    <h3>Calculation progress</h3>
+                    <p>When viewshed runs, a progress bar appears centred above the bottom readout pills. Quick starts automatically on entering Panorama; Hi Res and Super Res are on the Astronomy toolbar. The same bar appears while horizon relational monuments are fetched and matched to the skyline.</p>
+                  </div>
+                </div>
+                <div class="help-guide-item">
+                  <span class="help-sidebar-icon"><i class="ph-bold ph-paint-brush"></i></span>
+                  <div>
+                    <h3>Line and fill</h3>
+                    <p>The horizon line follows the visible skyline. Nearby detail comes from the high-resolution terrain mesh; distant blockers from the viewshed profile.</p>
+                  </div>
+                </div>
+                <div class="help-guide-item">
+                  <span class="help-sidebar-icon"><i class="ph-bold ph-cloud-sun"></i></span>
+                  <div>
+                    <h3>Below-horizon sky</h3>
+                    <p>Sky below the horizon line is masked so it does not show through gaps in the terrain. Sun and Moon are clipped to the same horizon.</p>
+                  </div>
+                </div>
               </div>
             </section>
 
             <section class="help-section">
               <h2>Top-Right Display Options</h2>
-              <p>These buttons decide what is shown on top of the terrain. The marker modes are mutually exclusive: selecting one monument mode turns the others off so the view has one clear meaning. Newly opened views default to showing all relational monuments.</p>
+              <p>These toolbar buttons control overlays and marker modes on the view. Monument marker modes are mutually exclusive. New site and location views default to all relational monuments within range.</p>
               <div class="help-control-grid">
-                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-arrow-counter-clockwise"></i></span><strong>Reset view</strong><span>Returns the camera towards the selected site and default viewing angle.</span></div>
-                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-note"></i></span><strong>Show Notes</strong><span>Shows notes for the active label. <span class="help-orange">Click a label to make it active</span>; close notes or turn this off to hide the notes pane.</span></div>
-                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-list-bullets"></i></span><strong>Show Legend</strong><span>Shows the icon legend for the currently visible monument marker categories.</span></div>
-                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-share-network"></i></span><strong>Relational Monuments of Type</strong><span>Shows nearby monuments of the same selected type, within the configured Type range.</span></div>
-                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-circles-three"></i></span><strong>All Relational Monuments</strong><span>Shows nearby monuments from the enabled relational monument classes, within the configured All relational range. This mode is switched on automatically when a site or View Location is loaded.</span></div>
-                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-dots-nine"></i></span><strong>Show All Monuments</strong><span>Shows all monument markers available in the current query area. It shows markers first, not labels.</span></div>
-                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-tag"></i></span><strong>Show All Labels</strong><span>Adds labels only for markers that are already visible. If no marker mode is active, this turns off because there is nothing to label.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-arrow-counter-clockwise"></i></span><strong>Reset view</strong><span>Returns bearing, pitch, and distance (or panorama telephoto zoom) towards defaults for the selected site.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-arrow-clockwise"></i></span><strong>Orbit selected site</strong><span>Runs one smooth 360° orbit. In Panorama mode it rotates the first-person view in place from the fixed observer position.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-note"></i></span><strong>Show Notes</strong><span>Opens the notes panel for the active label. <span class="help-orange">Click a label to make it active.</span> Notes and Date &amp; Time panels are mutually exclusive.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-stack"></i></span><strong>Surface</strong><span>Quick toggle between <strong>Esri Aerial Clarity</strong> and <strong>Terrain (Relief)</strong>. The sidebar Aerial Imagery radio stays in sync.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-list-bullets"></i></span><strong>Show Legend</strong><span>Shows the icon legend for currently visible monument categories.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-share-network"></i></span><strong>Relational Monuments of Type</strong><span>Shows nearby monuments of the selected type within the configured Type range.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-circles-three"></i></span><strong>All Relational Monuments</strong><span>Shows nearby monuments from enabled relational classes within the All relational range. Enabled automatically when a site or View Location loads.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-dots-nine"></i></span><strong>Show All Monuments</strong><span>Shows all monument markers in the current query area (markers first, not labels).</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-tag"></i></span><strong>Show All Labels</strong><span>Adds labels for visible markers only. Turns off if no marker mode is active.</span></div>
+              </div>
+            </section>
+
+            <section class="help-section">
+              <h2>Date &amp; Time Panel</h2>
+              <p>The on-view Date &amp; Time panel controls the astronomy clock. On first load, UTC date and time default to now. Changing the date stops any active time playback. The date panel and Configuration → Astronomy stay in sync.</p>
+              <div class="help-control-grid">
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-calendar-blank"></i></span><strong>Date fields</strong><span>Set UTC year (number steppers; minus for BCE), month, and day. Astronomical year numbering: year 0 = 1 BCE. Dates before 15 Oct 1582 use the Julian calendar; later dates use Gregorian.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-clock"></i></span><strong>Hour, minute, and second</strong><span>UTC time fields (0–23 / 0–59 / 0–59). Optional <strong>Use Summertime</strong> shows UTC+1 in the panel while keeping astronomy on UTC. All fields drive Sun, Moon, paths, and archaeolines together.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-caret-double-left"></i></span><strong>Step back</strong><span>Moves time back one minute per click. Hold to scrub backward quickly through the same calendar day (wraps within 24 hours).</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-caret-double-right"></i></span><strong>Step forward</strong><span>Moves time forward one minute per click. Hold to scrub forward quickly through the same calendar day.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-rewind"></i></span><strong>Rewind 5×</strong><span>Plays time backward at five times normal speed. Click again to stop.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-play"></i></span><strong>Play</strong><span>Plays time forward at normal speed, moving the Sun and Moon. Toggles to pause.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-fast-forward"></i></span><strong>Fast forward 5×</strong><span>Plays time forward at five times normal speed. Click again to stop.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-lightbulb"></i></span><strong>Background / Close</strong><span>Toggle the panel background for readability, or close the panel.</span></div>
               </div>
             </section>
 
             <section class="help-section">
               <h2>Notes, Links, and Details</h2>
-              <p>The Notes panel appears when Notes is enabled and a label is active. The first line identifies the active monument; the scroll area contains notes and optional detail fields.</p>
+              <p>The Notes panel appears when Notes is enabled and a label is active. The header identifies the monument; the scroll area holds notes and optional detail fields.</p>
               <div class="help-control-grid">
-                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-map-pin"></i></span><strong>Open in Google Maps</strong><span>Opens the active monument location in Google Maps using its latitude and longitude.</span></div>
-                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-browser"></i></span><strong>Open in National Monuments Viewer</strong><span>Opens the official source record where a valid ROI or NI public record link is available.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-map-pin"></i></span><strong>Open in Google Maps</strong><span>Opens the active monument location in Google Maps.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-browser"></i></span><strong>Open in National Monuments Viewer</strong><span>Opens the official public record URL from the monument data (<strong>WEBSITE_LINK</strong> / equivalent NI field) where available.</span></div>
                 <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-eye"></i></span><strong>View</strong><span>Recentres the display on the monument represented by the active notes panel.</span></div>
                 <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-dots-three-outline"></i></span><strong>Details</strong><span>Expands latitude, longitude, and the attribute table for the active monument.</span></div>
-                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-copy"></i></span><strong>Copy Lat/Lon</strong><span>Copies the displayed latitude or longitude from the Details area and confirms with the green Copied message.</span></div>
-                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-lightbulb"></i></span><strong>Notes background</strong><span>Toggles the translucent background behind notes for readability over bright imagery.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-copy"></i></span><strong>Copy Lat/Lon</strong><span>Copies latitude or longitude from Details and confirms with <strong>Copied !</strong></span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-lightbulb"></i></span><strong>Notes background</strong><span>Toggles the background behind notes for readability over bright imagery.</span></div>
                 <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-x"></i></span><strong>Close notes</strong><span>Closes the notes panel without removing the marker or label.</span></div>
               </div>
             </section>
 
             <section class="help-section">
               <h2>Legend Controls</h2>
-              <p>The Legend explains the monument icons currently being used on the display. It updates as marker modes and monument classes change.</p>
+              <p>The Legend explains monument icons currently in use. It updates as marker modes and classes change.</p>
               <div class="help-control-grid">
-                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-lightbulb"></i></span><strong>Legend background</strong><span>Toggles the translucent legend background for readability.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-lightbulb"></i></span><strong>Legend background</strong><span>Toggles the legend panel background.</span></div>
                 <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-x"></i></span><strong>Close legend</strong><span>Closes the legend panel. Use Show Legend in the top-right toolbar to reopen it.</span></div>
               </div>
             </section>
 
             <section class="help-section">
+              <h2>Bottom Readout (Panorama)</h2>
+              <p>When Astronomy / panorama mode is active, pills at the bottom-left show zoom (FOV × magnification), pitch, bearing, and—while the sky is computed—live Sun and Moon altitude and azimuth for the current UTC instant.</p>
+            </section>
+
+            <section class="help-section">
               <h2>Movement Controls</h2>
-              <p>The bottom-right movement controls move the camera through the landscape. Press and hold a control for smooth movement; on touch screens, one-finger drag rotates/pitches, two-finger drag pans, and pinch zooms. In Panorama mode the controls move and rotate the first-person observer position rather than an orbit target.</p>
+              <p>Bottom-right controls move and aim the camera. Press and hold for continuous movement. On touch: one-finger drag rotates/pitches; two-finger drag pans; pinch zooms (orbit distance in standard view, telephoto FOV in Panorama).</p>
               <div class="help-control-grid">
-                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-plus"></i></span><strong>Zoom in</strong><span>Moves the camera closer to the terrain and selected focus area.</span></div>
-                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-minus"></i></span><strong>Zoom out</strong><span>Moves the camera further away to show more surrounding landscape.</span></div>
-                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-arrow-up"></i></span><strong>Move forward</strong><span>Moves the focus point forward in the current viewing direction.</span></div>
-                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-arrow-down"></i></span><strong>Move back</strong><span>Moves the focus point backwards from the current viewing direction.</span></div>
-                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-arrow-left"></i></span><strong>Move left</strong><span>Moves the focus point left across the terrain.</span></div>
-                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-arrow-right"></i></span><strong>Move right</strong><span>Moves the focus point right across the terrain.</span></div>
-                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-trend-down"></i></span><strong>Pitch down</strong><span>Lowers the viewing angle toward the ground. In Panorama mode the lower limit is level, close to 0 degrees.</span></div>
-                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-trend-up"></i></span><strong>Pitch up</strong><span>Raises the viewing angle for a broader horizon and skyline view.</span></div>
-                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-arrow-counter-clockwise"></i></span><strong>Rotate left</strong><span>Turns the camera bearing counter-clockwise around the focus area.</span></div>
-                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-arrow-clockwise"></i></span><strong>Rotate right</strong><span>Turns the camera bearing clockwise around the focus area.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-plus"></i></span><strong>Zoom in</strong><span><strong>Standard view:</strong> orbit closer without moving the focus point. <strong>Panorama:</strong> telephoto zoom (narrower field of view) from the same observer position — ideal for horizon/sunrise work.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-minus"></i></span><strong>Zoom out</strong><span><strong>Standard view:</strong> orbit further out. <strong>Panorama:</strong> wider field of view. The readout shows distance (m) or FOV × magnification.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-arrow-up"></i></span><strong>Move forward</strong><span>Moves the view location forward across the terrain (focus point in standard view; observer position in Panorama).</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-arrow-down"></i></span><strong>Move back</strong><span>Moves the view location backward.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-arrow-left"></i></span><strong>Move left</strong><span>Moves the view location left across the terrain.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-arrow-right"></i></span><strong>Move right</strong><span>Moves the view location right across the terrain.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-trend-down"></i></span><strong>Pitch down</strong><span>Lowers viewing angle toward the ground. Panorama lower limit is level (~0°).</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-trend-up"></i></span><strong>Pitch up</strong><span>Raises viewing angle toward the horizon and sky.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-arrow-counter-clockwise"></i></span><strong>Rotate left</strong><span>Turns bearing counter-clockwise.</span></div>
+                <div class="help-control-item"><span class="help-icon-pill"><i class="ph-bold ph-arrow-clockwise"></i></span><strong>Rotate right</strong><span>Turns bearing clockwise.</span></div>
               </div>
             </section>
 
             <section class="help-section">
               <h2>Monument Icons, Markers, and Labels</h2>
-              <p>Monument classes use repeatable geometric icons. The same class uses the same icon in the Monument Types list, Sites context, map markers, and Legend.</p>
+              <p>Monument classes use repeatable geometric icons (MegIcon). The same class uses the same icon in Monument Types, Sites, markers, Saved Views, and Legend.</p>
               <div class="help-example-row">
                 <div class="help-monument-example">
                   <span class="help-megicon-example" data-help-megicon="Megalithic tomb - passage tomb"></span>
@@ -529,21 +921,21 @@
                   <span class="help-sidebar-icon"><i class="ph-bold ph-map-pin"></i></span>
                   <div>
                     <h3>Markers</h3>
-                    <p>Markers are the small monument icons placed over the landscape. <span class="help-orange">Click a marker once to show its label.</span> Click the same marker again to remove that label.</p>
+                    <p>Small monument icons on the landscape. <span class="help-orange">Click once to show a label.</span> Click the same marker again to remove it.</p>
                   </div>
                 </div>
                 <div class="help-guide-item">
                   <span class="help-sidebar-icon"><i class="ph-bold ph-tag"></i></span>
                   <div>
                     <h3>Labels</h3>
-                    <p>Labels identify the monument. <span class="help-orange">Click a label to make it active.</span> If Notes is enabled, the notes panel then shows the active monument’s information.</p>
+                    <p>Identify the monument. <span class="help-orange">Click a label to make it active.</span> With Notes enabled, the notes panel shows that monument’s information.</p>
                   </div>
                 </div>
                 <div class="help-guide-item">
                   <span class="help-sidebar-icon"><i class="ph-bold ph-cursor-click"></i></span>
                   <div>
                     <h3>Selection rule</h3>
-                    <p>There is no hidden reactivation state: marker click toggles the label, label click makes that label active, and removing an active label removes its notes.</p>
+                    <p>Marker click toggles the label; label click activates it; removing an active label clears its notes.</p>
                   </div>
                 </div>
               </div>
@@ -551,48 +943,48 @@
 
             <section class="help-section">
               <h2>Sidebar Usage</h2>
-              <p>The sidebar is used from top to bottom: enter a specific location, choose what kind of monument you want to examine, then choose the individual site, or return to a saved view. Once a view loads, the sidebar auto-collapses to keep the landscape clear.</p>
+              <p>Work top to bottom: location → saved view → monument type → site. Configuration and About sit below. The sidebar auto-collapses after loading a view.</p>
               <div class="help-guide-list">
                 <div class="help-guide-item">
                   <span class="help-sidebar-icon"><i class="ph-bold ph-crosshair"></i></span>
                   <div>
                     <h3>View Location</h3>
-                    <p>Open <strong>Location</strong> and enter latitude and longitude to load a standard camera view at that position. The default entry is retained in the fields but is not loaded automatically. Loading a location also turns on all relational monument markers for the surrounding view.</p>
-                  </div>
-                </div>
-                <div class="help-guide-item">
-                  <span class="help-sidebar-icon"><i class="ph-bold ph-list-checks"></i></span>
-                  <div>
-                    <h3>1. Choose a Monument Type</h3>
-                    <p>Open <strong>Monument Types</strong> and select a class such as passage tomb, wedge tomb, barrow, church, cross, or another enabled type. The application then queries the Ireland and Northern Ireland monument services and rebuilds the Sites list for that selected class.</p>
-                  </div>
-                </div>
-                <div class="help-guide-item">
-                  <span class="help-sidebar-icon"><i class="ph-bold ph-map-pin"></i></span>
-                  <div>
-                    <h3>2. Select a Site</h3>
-                    <p>Use the <strong>Sites</strong> cards to choose a monument. Each card gives the display name, SMR reference, and county. Selecting a site loads the terrain, places the selected marker, opens the selected label, prepares the notes/detail tools, turns on all relational monuments, and collapses the sidebar.</p>
-                  </div>
-                </div>
-                <div class="help-guide-item">
-                  <span class="help-sidebar-icon"><i class="ph-bold ph-sort-ascending"></i></span>
-                  <div>
-                    <h3>3. Refine the Site List</h3>
-                    <p>Use <strong>Sort by County</strong> when you want the Sites list grouped geographically. This is useful when a monument type returns a long list across the island and you want to work through one county or border area at a time.</p>
+                    <p>Enter latitude and longitude under <strong>Location</strong>, then click <strong>View Location</strong> to load a standard camera view at any time (including from FP view). Loading a location enables all relational monuments in range. Fields accept decimal degrees (e.g. <strong>53.490266</strong>, <strong>-7.5625666</strong>), comma decimals, optional <strong>N/S/E/W</strong>, and DMS (e.g. <strong>53°29'24"N</strong>). You can paste <strong>lat, lon</strong> into the latitude field. Longitude may be entered as 0–360° and is normalised automatically.</p>
                   </div>
                 </div>
                 <div class="help-guide-item">
                   <span class="help-sidebar-icon"><i class="ph-bold ph-bookmark-simple"></i></span>
                   <div>
-                    <h3>4. Return to Saved Views</h3>
-                    <p>Use <strong>Saved Views</strong> to reopen a named state. A saved view can restore the selected site, camera angle, visible marker modes, open labels, ranges, sidebar visibility, and control visibility.</p>
+                    <h3>Saved Views</h3>
+                    <p>Reopen named orbit or FP views stored in this browser. Restores site, camera/panorama state, marker modes, open labels, ranges, and UI visibility. FP views also restore date/time, archaeolines, and horizon relational settings. Use the toolbar to save, copy a URL, export, or import views.</p>
+                  </div>
+                </div>
+                <div class="help-guide-item">
+                  <span class="help-sidebar-icon"><i class="ph-bold ph-list-checks"></i></span>
+                  <div>
+                    <h3>Monument Types</h3>
+                    <p>Select a class to query ROI and NI monument services and populate the Sites list. Available classes come from Configuration → Presets.</p>
+                  </div>
+                </div>
+                <div class="help-guide-item">
+                  <span class="help-sidebar-icon"><i class="ph-bold ph-map-pin"></i></span>
+                  <div>
+                    <h3>Sites</h3>
+                    <p>Choose a monument card (name, SMR, county). Loads terrain, selected marker and label, notes tools, relational monuments, and collapses the sidebar.</p>
+                  </div>
+                </div>
+                <div class="help-guide-item">
+                  <span class="help-sidebar-icon"><i class="ph-bold ph-sort-ascending"></i></span>
+                  <div>
+                    <h3>Sort by County</h3>
+                    <p>Groups the Sites list geographically when working through long type lists county by county.</p>
                   </div>
                 </div>
                 <div class="help-guide-item">
                   <span class="help-sidebar-icon"><i class="ph-bold ph-caret-down"></i></span>
                   <div>
                     <h3>Panel toggles</h3>
-                    <p>Use the caret or plus/minus button on a sidebar panel header to expand or collapse that panel. When the sidebar itself is collapsed, a slim left-edge control remains; hover, touch, or focus it to reopen the sidebar smoothly.</p>
+                    <p>Use the caret on each sidebar panel header to expand or collapse it. Configuration inner sections use the same collapsible pattern as Presets.</p>
                   </div>
                 </div>
               </div>
@@ -600,74 +992,114 @@
 
             <section class="help-section">
               <h2>Configuration</h2>
-              <p>Configuration changes what is available in the viewer and how the landscape is presented. These controls are collapsed by default so the normal site-selection workflow remains clear.</p>
+              <p>Open <strong>Configuration</strong> in the sidebar. Inner sections are collapsed by default and share the same Presets-style layout. Expand any section with its caret.</p>
               <div class="help-guide-list">
+                <div class="help-guide-item">
+                  <span class="help-sidebar-icon"><i class="ph-bold ph-list-checks"></i></span>
+                  <div>
+                    <h3>Presets</h3>
+                    <p>Choose which monument classes appear in Monument Types.</p>
+                  </div>
+                </div>
+                <div class="help-guide-item">
+                  <span class="help-sidebar-icon"><i class="ph-bold ph-bookmark-simple"></i></span>
+                  <div>
+                    <h3>Saved Views (storage)</h3>
+                    <p>Enable or disable IndexedDB stored views and purge all saved view data from this browser.</p>
+                  </div>
+                </div>
                 <div class="help-guide-item">
                   <span class="help-sidebar-icon"><i class="ph-bold ph-floppy-disk"></i></span>
                   <div>
-                    <h3>Saved Views</h3>
-                    <p>Turn stored views on when you want named views to persist in this browser. Use <strong>Purge Saved Views</strong> when you want to remove all stored view data from IndexedDB and start again. This affects this browser only.</p>
-                  </div>
-                </div>
-                <div class="help-guide-item">
-                  <span class="help-sidebar-icon"><i class="ph-bold ph-check-square"></i></span>
-                  <div>
                     <h3>Save Monument Selection</h3>
-                    <p>Leave this on if your chosen monument type set should survive a refresh. If the type list becomes too broad or too narrow, use <strong>Reset Defaults</strong> to restore the application’s default monument selection.</p>
-                  </div>
-                </div>
-                <div class="help-guide-item">
-                  <span class="help-sidebar-icon"><i class="ph-bold ph-sliders-horizontal"></i></span>
-                  <div>
-                    <h3>Presets</h3>
-                    <p>Tick or untick monument classes in <strong>Presets</strong>. Those choices directly control which classes appear in <strong>Monument Types</strong>, so this is where you build the working category set for the session.</p>
+                    <p>Persist the current Monument Types checkbox set across sessions, or reset to defaults.</p>
                   </div>
                 </div>
                 <div class="help-guide-item">
                   <span class="help-sidebar-icon"><i class="ph-bold ph-image"></i></span>
                   <div>
                     <h3>Aerial Imagery</h3>
-                    <p>Select the imagery layer used on the terrain. <strong>Google Satellite</strong>, <strong>Esri Clarity</strong>, and <strong>Terrain</strong> can reveal different landscape evidence, from field boundaries to landform context.</p>
+                    <p>Google Aerial, Esri Aerial Clarity (default), or Terrain relief. The Surface toolbar button toggles between Esri Clarity and Terrain.</p>
                   </div>
                 </div>
                 <div class="help-guide-item">
-                  <span class="help-sidebar-icon"><i class="ph-bold ph-share-network"></i></span>
+                  <span class="help-sidebar-icon"><i class="ph-bold ph-sliders-horizontal"></i></span>
                   <div>
                     <h3>Display Options</h3>
-                    <p>Use <strong>Display Visibility</strong> to change overlay opacity. Turn on notes, legend, related markers, all relational markers, all monuments, or all labels as needed. The <strong>Type range</strong> and <strong>All relational range</strong> sliders set the query radius from 0 to 20 km. All relational markers are enabled by default whenever a new site or location view is opened.</p>
+                    <p>Overlay opacity, monument marker modes, label toggle, and Type / All relational range sliders (0–20 km).</p>
                   </div>
                 </div>
                 <div class="help-guide-item">
                   <span class="help-sidebar-icon"><i class="ph-bold ph-mountains"></i></span>
                   <div>
                     <h3>Terrain Controls</h3>
-                    <p>Use <strong>Height Exaggeration</strong> to increase or reduce relief. Choose <strong>Standard DEM Area</strong> for the normal footprint or <strong>Double DEM Area</strong> when a wider high-resolution terrain and imagery patch is needed.</p>
+                    <p>Vertical exaggeration (0× = flat imagery surface) and Standard vs Double DEM area footprint.</p>
+                  </div>
+                </div>
+                <div class="help-guide-item">
+                  <span class="help-sidebar-icon"><i class="ph-bold ph-sun-horizon"></i></span>
+                  <div>
+                    <h3>Horizon Draw</h3>
+                    <p>Default horizon resolution for Configuration (Quick / Hi-Res / Super). All modes use a 120 km viewshed scan; see <strong>Horizon Line (Panorama)</strong> above.</p>
+                  </div>
+                </div>
+                <div class="help-guide-item">
+                  <span class="help-sidebar-icon"><i class="ph-bold ph-planet"></i></span>
+                  <div>
+                    <h3>Astronomy</h3>
+                    <p>Swiss Ephemeris (default) or Astronomy Engine; <strong>Swiss Ephemeris atmosphere</strong> (default on) applies refraction to Sun, Moon, paths, and archaeolines. UTC date/time with seconds; optional summertime display offset. Sun/Moon display scale; show Sun, Moon, and daily paths. Archaeoline types (equinox, solstice, cross-quarter, major/minor lunar) are enabled here; master toggles are on the Astronomy toolbar (rainbow and compass icons). <strong>Horizon compass</strong> is also available in Configuration.</p>
+                  </div>
+                </div>
+                <div class="help-guide-item">
+                  <span class="help-sidebar-icon"><i class="ph-bold ph-paint-brush"></i></span>
+                  <div>
+                    <h3>Terrain Painting</h3>
+                    <p>Shader controls for height tint, relative height, contrast, hillshade, and distance grading on the terrain mesh.</p>
+                  </div>
+                </div>
+                <div class="help-guide-item">
+                  <span class="help-sidebar-icon"><i class="ph-bold ph-cloud-sun"></i></span>
+                  <div>
+                    <h3>Atmosphere &amp; Display</h3>
+                    <p>Brightness, gamma, haze, desaturation, and fade distance for the rendered view. Stellarium export always uses a transparent sky.</p>
                   </div>
                 </div>
               </div>
             </section>
 
             <section class="help-section">
+              <h2>Privacy &amp; local data</h2>
+              <p><strong>No cookies are used.</strong> Archaeoscapes does not set or read cookies.</p>
+              <p>The only data stored on your device relates to <strong>saved views</strong> you choose to create. This is stored locally in your browser (IndexedDB) and is entirely under your control: save, reopen, export, import, disable storage, or purge all saved views from the toolbar or Configuration at any time.</p>
+            </section>
+
+            <section class="help-section">
               <h2>About</h2>
               <div class="brand-logo help-logo-inline" aria-label="Archaeoscapes">
-                <i class="fa-solid fa-landmark"></i>
+                <img class="logo-icon" src="./sun.svg?v=20260531" alt="" aria-hidden="true">
                 <span>Archaeoscapes</span>
               </div>
               <p class="help-credit">developed by<br><strong>Brian Doyle</strong><br>2026</p>
-              <p><strong>Licence.</strong> The code is issued using Creative Commons - Attribution 4.0 International - CC BY 4.0.</p>
+              <p><strong>Privacy.</strong> No cookies are used. The only data stored on your device relates to saved views you choose to create; you control this entirely (save, export, import, disable, or purge from Configuration).</p>
+              <p><strong>Licence.</strong> Application code: Creative Commons Attribution 4.0 International (CC BY 4.0).</p>
               <p><strong>Disclaimer.</strong> This application and its outputs are provided for research, educational, and exploratory use only. Data, terrain, imagery, derived views, positional information, classifications, and interpretive material may contain errors or omissions and should not be treated as legal, planning, conservation, excavation, navigation, or safety advice. Users should verify all information against the relevant official sources before relying on it.</p>
               <p><strong>Attributions.</strong></p>
               <ul>
-                <li>Elevation data: Terrarium-format public elevation tiles from AWS Open Data / Mapzen-derived terrain tiles.</li>
-                <li>Imagery: Esri World Imagery / Esri World Imagery Clarity.</li>
-                <li>Imagery: Google satellite tile service where selected by the user.</li>
-                <li>Monument data, Ireland: National Monuments Service Sites and Monuments Record Open Data.</li>
-                <li>Monument data, Northern Ireland: Historic Environment Division / Department for Communities HED and NISMR public datasets.</li>
+                <li><strong>Elevation:</strong> Terrarium-format tiles via AWS Open Data (Mapzen-derived terrain).</li>
+                <li><strong>Imagery:</strong> Esri World Imagery / Esri World Imagery Clarity; Google satellite tiles where selected.</li>
+                <li><strong>Monuments, Ireland:</strong> National Monuments Service Sites and Monuments Record Open Data (ArcGIS Feature Service).</li>
+                <li><strong>Monuments, Northern Ireland:</strong> Historic Environment Division GIS / NISMR public datasets (ArcGIS Feature Service).</li>
+                <li><strong>Astronomy:</strong> Swiss Ephemeris (Astrodienst; GPL-3.0-or-later, vendored WASM build with ephemeris files); Astronomy Engine (cosinekitty/astronomy, MIT).</li>
+                <li><strong>Rendering &amp; UI:</strong> Three.js; Phosphor Icons; Leaflet and Esri Leaflet; html2canvas; JSZip (Stellarium export).</li>
+                <li><strong>Typography:</strong> Inter, JetBrains Mono, and Montserrat via Google Fonts.</li>
               </ul>
+              <p class="hint small">Swiss Ephemeris is subject to Astrodienst licensing terms. Commercial use of Swiss Ephemeris may require a separate licence from Astrodienst AG.</p>
             </section>
           </article>
         </div>
       </section>
+
+      <div id="custom-label-pick-overlay" class="custom-label-pick-overlay hidden" aria-hidden="true" aria-label="Pick azimuth and altitude from view"></div>
 
       <div id="notes-inline" class="notes-inline hidden" aria-live="polite">
         <div class="notes-controls">
@@ -718,6 +1150,145 @@
         </div>
       </div>
 
+      <div id="custom-label-inline" class="notes-inline stage-panel-inline hidden" aria-live="polite">
+        <div class="notes-controls">
+          <div class="notes-controls-left">
+            <span class="stage-panel-title"><i class="ph-bold ph-crosshair"></i> Custom Label</span>
+          </div>
+          <div class="notes-controls-right">
+            <button id="custom-label-bg-toggle" class="notes-ctlbtn" type="button" aria-label="Toggle custom label panel background" title="Toggle background">
+              <i class="ph-bold ph-lightbulb"></i>
+            </button>
+            <button id="custom-label-close" class="notes-ctlbtn" type="button" aria-label="Close custom label panel" title="Close">
+              <i class="ph-bold ph-x"></i>
+            </button>
+          </div>
+        </div>
+        <div class="notes-scroll">
+          <p class="stage-panel-hint">Add a sky marker and label at a chosen azimuth and altitude. Use <strong>Pick from view</strong> to read coordinates from the FP panorama (crosshair cursor).</p>
+          <form id="custom-label-form" class="custom-label-form">
+            <label for="custom-label-heading">
+              <span>Heading</span>
+              <input id="custom-label-heading" class="coord-input stage-panel-input" type="text" maxlength="80" autocomplete="off" spellcheck="false" placeholder="Label title">
+            </label>
+            <label for="custom-label-subtext">
+              <span>Sub text</span>
+              <input id="custom-label-subtext" class="coord-input stage-panel-input" type="text" maxlength="120" autocomplete="off" spellcheck="false" placeholder="Detail line (optional)">
+            </label>
+            <div class="custom-label-coord-grid">
+              <label for="custom-label-alt">
+                <span>Alt (°)</span>
+                <input id="custom-label-alt" class="coord-input stage-panel-input" type="number" step="0.01" min="-90" max="90" autocomplete="off" spellcheck="false" placeholder="0.00">
+              </label>
+              <label for="custom-label-azi">
+                <span>Azi (°)</span>
+                <input id="custom-label-azi" class="coord-input stage-panel-input" type="number" step="0.1" min="0" max="360" autocomplete="off" spellcheck="false" placeholder="0.0">
+              </label>
+            </div>
+            <div class="custom-label-form-actions">
+              <button id="custom-label-pick" class="monument-selection-reset custom-label-action-btn" type="button">
+                <i class="ph-bold ph-cursor-click"></i>
+                <span>Pick from view</span>
+              </button>
+              <button id="custom-label-add" class="monument-selection-reset custom-label-action-btn custom-label-action-btn--primary" type="submit">
+                <i class="ph-bold ph-map-pin"></i>
+                <span>Add Label</span>
+              </button>
+              <button id="custom-label-remove" class="monument-selection-reset custom-label-action-btn custom-label-action-btn--danger hidden" type="button">
+                <i class="ph-bold ph-trash"></i>
+                <span>Remove selected</span>
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <div id="datetime-inline" class="notes-inline stage-panel-inline hidden" aria-live="polite">
+        <div class="notes-controls">
+          <div class="notes-controls-left">
+            <span class="stage-panel-title"><i class="ph-bold ph-calendar-blank"></i> Date &amp; Time</span>
+          </div>
+          <div class="notes-controls-right">
+            <button id="datetime-bg-toggle" class="notes-ctlbtn" type="button" aria-label="Toggle date panel background" title="Toggle background">
+              <i class="ph-bold ph-lightbulb"></i>
+            </button>
+            <button id="datetime-close" class="notes-ctlbtn" type="button" aria-label="Close date panel" title="Close">
+              <i class="ph-bold ph-x"></i>
+            </button>
+          </div>
+        </div>
+        <div class="notes-scroll">
+          <p class="stage-panel-hint">Astronomical year numbering: year 0 = 1 BCE. Dates before 15 Oct 1582 use the Julian calendar.</p>
+          <p class="stage-panel-hint stage-panel-check">
+            <label for="dt-use-summertime">
+              <input id="dt-use-summertime" type="checkbox">
+              Use Summertime
+            </label>
+          </p>
+          <div class="astro-date-grid stage-panel-date-grid">
+            <label for="dt-year">
+              <span>Year</span>
+              <input id="dt-year" class="coord-input stage-panel-input" type="number" min="-9999" max="9999" step="1" autocomplete="off" spellcheck="false" placeholder="-3000">
+            </label>
+            <label for="dt-month">
+              <span>Month</span>
+              <input id="dt-month" class="coord-input stage-panel-input" type="number" min="1" max="12" step="1">
+            </label>
+            <label for="dt-day">
+              <span>Day</span>
+              <input id="dt-day" class="coord-input stage-panel-input" type="number" min="1" max="31" step="1">
+            </label>
+            <label for="dt-hour">
+              <span id="dt-hour-label">Hour (UTC)</span>
+              <input id="dt-hour" class="coord-input stage-panel-input" type="number" min="0" max="23" step="1">
+            </label>
+            <label for="dt-minute">
+              <span>Minute</span>
+              <input id="dt-minute" class="coord-input stage-panel-input" type="number" min="0" max="59" step="1">
+            </label>
+            <label for="dt-second">
+              <span>Second</span>
+              <input id="dt-second" class="coord-input stage-panel-input" type="number" min="0" max="59" step="1">
+            </label>
+          </div>
+          <div id="dt-time-transport" class="dt-time-transport" aria-label="Time transport controls">
+            <button type="button" class="dt-time-btn" data-time-action="step-back" data-tip="Step back (hold to scroll)" aria-label="Step time back">
+              <i class="ph-bold ph-caret-double-left"></i>
+            </button>
+            <button type="button" class="dt-time-btn" data-time-action="rewind" data-tip="Rewind 5×" aria-label="Rewind time at 5 times speed">
+              <i class="ph-bold ph-rewind"></i>
+            </button>
+            <button type="button" class="dt-time-btn" data-time-action="play" data-tip="Play forward" aria-label="Play time forward">
+              <i class="ph-bold ph-play"></i>
+            </button>
+            <button type="button" class="dt-time-btn" data-time-action="fast-forward" data-tip="Fast forward 5×" aria-label="Fast forward time at 5 times speed">
+              <i class="ph-bold ph-fast-forward"></i>
+            </button>
+            <button type="button" class="dt-time-btn" data-time-action="step-forward" data-tip="Step forward (hold to scroll)" aria-label="Step time forward">
+              <i class="ph-bold ph-caret-double-right"></i>
+            </button>
+          </div>
+          <div id="dt-calendar-label" class="stage-panel-meta">Calendar: --</div>
+        </div>
+      </div>
+
+      <div id="simulation-inline" class="notes-inline stage-panel-inline hidden" aria-live="polite">
+        <div class="notes-controls">
+          <div class="notes-controls-left">
+            <span class="stage-panel-title"><i class="ph-bold ph-aperture"></i> Simulation</span>
+          </div>
+          <div class="notes-controls-right">
+            <button id="simulation-bg-toggle" class="notes-ctlbtn" type="button" aria-label="Toggle simulation panel background" title="Toggle background">
+              <i class="ph-bold ph-lightbulb"></i>
+            </button>
+            <button id="simulation-close" class="notes-ctlbtn" type="button" aria-label="Close simulation panel" title="Close">
+              <i class="ph-bold ph-x"></i>
+            </button>
+          </div>
+        </div>
+        <div class="notes-scroll" id="simulation-scroll"></div>
+      </div>
+
       <div id="legend-inline" class="legend-inline hidden" aria-live="polite">
         <div class="notes-controls">
           <button id="legend-bg-toggle" class="notes-ctlbtn" type="button" aria-label="Toggle legend background" title="Toggle legend background">
@@ -741,7 +1312,7 @@
       <div id="marker-layer" class="marker-layer" aria-hidden="true"></div>
 
       <div class="stage-brandmark" aria-label="Archaeoscapes">
-        <i class="fa-solid fa-landmark"></i>
+        <img class="logo-icon" src="./sun.svg?v=20260531" alt="" aria-hidden="true">
         <span>Archaeoscapes</span>
       </div>
 
@@ -758,16 +1329,32 @@
         <button data-action="rotate-right" data-tip="Rotate right" aria-label="Rotate right"><i class="ph-bold ph-arrow-clockwise"></i></button>
       </div>
 
-      <div class="readout">
-        <span>Zoom <b id="zoom-readout">--</b></span>
-        <span>Pitch <b id="pitch-readout">--</b>°</span>
-        <span>Bearing <b id="bearing-readout">--</b>°</span>
+      <div class="stage-bottom-hud">
+        <div id="fpv-horizon-status-wrap" class="fpv-horizon-status-wrap hidden" aria-hidden="true">
+          <div id="horizon-calc-panel" class="fpv-horizon-status hidden" aria-live="polite">
+            <div id="horizon-calc-text" class="horizon-calc-text">Calculating viewshed horizon…</div>
+            <div id="horizon-calc-progress" class="horizon-calc-progress" role="progressbar" aria-label="Horizon calculation progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+              <div id="horizon-calc-progress-fill" class="horizon-calc-progress-fill"></div>
+            </div>
+          </div>
+        </div>
+        <div class="readout">
+          <span>Zoom <b id="zoom-readout">--</b></span>
+          <span>Pitch <b id="pitch-readout">--</b>°</span>
+          <span>Bearing <b id="bearing-readout">--</b>°</span>
+          <span id="sun-readout-wrap" class="readout-astro hidden">Sun Alt <b id="sun-alt-readout">--</b>° Azi <b id="sun-azi-readout">--</b>°</span>
+          <span id="moon-readout-wrap" class="readout-astro hidden">Moon Alt <b id="moon-alt-readout">--</b>° Azi <b id="moon-azi-readout">--</b>°</span>
+        </div>
       </div>
     </main>
   </div>
 
   <script src="./megicon/megicon.js"></script>
   <script src="./mobile-controls.js"></script>
-  <script src="./app.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/astronomy-engine@2.1.19/astronomy.browser.min.js"></script>
+  <script src="./astronomy.js?v=20260602-eclipse-order"></script>
+  <script src="./app.js?v=20260603-custom-label"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <script src="./stellarium-export.js"></script>
 </body>
 </html>
